@@ -334,7 +334,7 @@
     .palette .tw .key { font-size: 9px; }
     .hint, #hint { display: none; }
     .items {
-      bottom: calc(40vh + 8px) !important;
+      bottom: 192px !important;
       left: 8px;
       right: 8px;
     }
@@ -3274,14 +3274,15 @@ function destroyObstacle(o) {
   if (i >= 0) S.obs.splice(i, 1);
 }
 
+let _lastAnn = { text: '', t: -99 };
+// 原来会在地图上打大字横幅，现在统一写进左侧事件栏
 function announce(text, color) {
+  const now = (typeof S !== 'undefined' && S && S.time) ? S.time : (performance.now() / 1000);
+  if (_lastAnn.text === text && now - _lastAnn.t < 1.5) return;
+  _lastAnn = { text: text, t: now };
+  logEvent(text, 'event');
   const el = document.getElementById('announce');
-  if (!el) return;
-  el.textContent = text;
-  el.style.color = color || '#fff';
-  el.classList.remove('on');
-  void el.offsetWidth;
-  el.classList.add('on');
+  if (el) el.classList.remove('on');
 }
 
 function flashScreen(color, a) {
@@ -4780,12 +4781,17 @@ function applyMobileLayout() {
     pal.style.setProperty('max-width', cw + 'px', 'important');
     if (portrait) {
       pal.style.setProperty('display', 'grid', 'important');
-      pal.style.setProperty('grid-template-columns', 'repeat(3, minmax(0, 1fr))', 'important');
-      pal.style.setProperty('grid-auto-rows', '84px', 'important');
-      pal.style.setProperty('height', Math.round(ch * 0.4) + 'px', 'important');
-      pal.style.setProperty('max-height', Math.round(ch * 0.4) + 'px', 'important');
-      pal.style.setProperty('overflow-x', 'hidden', 'important');
-      pal.style.setProperty('overflow-y', 'auto', 'important');
+      pal.style.setProperty('grid-auto-flow', 'column', 'important');
+      pal.style.setProperty('grid-template-rows', 'repeat(2, 84px)', 'important');
+      pal.style.setProperty('grid-auto-columns', '86px', 'important');
+      pal.style.setProperty('grid-template-columns', 'none', 'important');
+      pal.style.setProperty('grid-auto-rows', 'auto', 'important');
+      pal.style.setProperty('height', '184px', 'important');
+      pal.style.setProperty('max-height', '184px', 'important');
+      pal.style.setProperty('overflow-x', 'auto', 'important');
+      pal.style.setProperty('overflow-y', 'hidden', 'important');
+      pal.style.setProperty('justify-content', 'start', 'important');
+      pal.style.setProperty('align-content', 'center', 'important');
     }
   } else {
     ['position','left','right','transform','margin','box-sizing','width','max-width',
@@ -4893,12 +4899,16 @@ function framePath() {
       if (gy > ry1) ry1 = gy;
     }
     if (rx1 < rx0) { rx0 = 0; rx1 = N - 1; ry0 = 0; ry1 = N - 1; }
-    // 整张地图（N×N）完整铺满屏幕宽度并居中
+    // 整张地图（N×N）放进上方可用区域并居中
+    const palH = 184 + 54;                    // 两行建造栏 + 道具栏
+    const regionH2 = Math.max(130, ch - 96 - palH);
     const zW = cw / N;
-    const zH = (ch * 0.60 - 92) / N;
+    const zH = regionH2 / N;
     cam.z = clamp(Math.min(zW, zH), 8, 60);
     cam.x = N / 2;
     cam.y = N / 2;
+    const mapPx = N * cam.z;
+    cam.oy = (96 + Math.max(0, (regionH2 - mapPx) / 2) + mapPx / 2) - ch / 2;
   }
 }
 
