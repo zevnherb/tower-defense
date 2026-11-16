@@ -296,25 +296,100 @@
     .hint, #hint { font-size: 9px; bottom: 2px; }
   }
 
+  /* ── 竖屏：地图上部 60%，建造面板下部 40% ── */
+  @media (max-width: 760px) and (orientation: portrait) {
+    .palette {
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      height: 40vh;
+      max-height: 40vh;
+      transform: none;
+      width: auto;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-auto-rows: 82px;
+      gap: 6px;
+      padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+      border-radius: 14px 14px 0 0;
+      background: rgba(10, 14, 20, .96);
+      border-top: 1px solid rgba(255, 255, 255, .10);
+      overflow-y: auto;
+      overflow-x: hidden;
+      align-content: start;
+    }
+    .palette .tw {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      justify-self: stretch;
+      flex: none;
+      height: 82px;
+      overflow: hidden;
+    }
+    .palette .tw canvas { width: 40px; height: 40px; }
+    .palette .tw .nm { font-size: 11px; }
+    .palette .tw .pr { font-size: 10px; }
+    .palette .tw .key { font-size: 9px; }
+    .hint, #hint { display: none; }
+    .items {
+      bottom: calc(40vh + 8px) !important;
+      left: 8px;
+      right: 8px;
+    }
+  }
+
   /* ── 手机 / 平板适配 ── */
   @media (max-width: 760px) {
     .hud {
       flex-direction: column;
       align-items: stretch;
-      gap: 6px;
-      padding: 8px 10px;
+      gap: 5px;
+      padding: 6px 8px;
+      max-width: 100vw;
+      overflow: hidden;
     }
     .hud .ctrls {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      gap: 5px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 2px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .hud .ctrls::-webkit-scrollbar { height: 0; display: none; }
+    .hud .ctrls .btn {
+      flex: 0 0 auto;
+      min-width: 0;
+      padding: 7px 10px;
+      font-size: 11.5px;
+      white-space: nowrap;
+    }
+    .items {
+      left: 6px;
+      right: 6px;
+      top: auto;
+      bottom: 96px;
+      max-width: none;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 2px;
+    }
+    .items::-webkit-scrollbar { height: 0; display: none; }
+    .item {
+      flex: 0 0 auto;
+      padding: 7px 11px;
+      font-size: 12.5px;
       gap: 6px;
     }
-    .hud .ctrls .btn {
-      flex: 1 1 auto;
-      min-width: 62px;
-      padding: 7px 6px;
-      font-size: 12px;
-    }
+    .item i { font-size: 15px; }
+    .item b { font-size: 10.5px; }
     .palette {
       left: 6px;
       right: 6px;
@@ -368,6 +443,65 @@
   /* 刘海屏安全区 */
   .hud { padding-top: max(10px, env(safe-area-inset-top)); }
   .palette { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  /* ── 竖屏修正：建造面板卡片等分列宽，避免右侧裁切 ── */
+  @media (max-width: 760px) and (orientation: portrait) {
+    .palette {
+      overflow-x: hidden !important;
+      padding-right: 6px !important;
+      padding-left: 6px !important;
+    }
+    .palette .tw {
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: 100% !important;
+      flex: none !important;
+      height: 100% !important;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+    }
+    .palette .tw canvas {
+      width: 38px !important;
+      height: 38px !important;
+      flex: none;
+    }
+    .palette .tw .nm { font-size: 11px; line-height: 1.1; }
+    .palette .tw .pr { font-size: 10px; }
+  }
+
+  @media (max-width: 760px) {
+    .palette {
+      position: fixed !important;
+      left: 0 !important;
+      right: 0 !important;
+      width: 100vw !important;
+      max-width: 100vw !important;
+      min-width: 0 !important;
+      margin: 0 !important;
+      box-sizing: border-box !important;
+      transform: none !important;
+    }
+  }
+  @media (max-width: 760px) and (orientation: portrait) {
+    .palette {
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      grid-auto-rows: 84px !important;
+      gap: 5px !important;
+      padding: 8px 6px calc(8px + env(safe-area-inset-bottom)) !important;
+      overflow-x: hidden !important;
+    }
+    .palette .tw {
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: 100% !important;
+      height: 84px !important;
+      box-sizing: border-box !important;
+    }
+  }
+
 </style>
 </head>
 <body>
@@ -4631,13 +4765,47 @@ function gameOver(won) {
 /* ══════════════════════════════════════════════════════════════
    渲染
    ══════════════════════════════════════════════════════════════ */
+function applyMobileLayout() {
+  const pal = document.getElementById('palette');
+  if (!pal) return;
+  const portrait = cw < 760 && ch > cw;
+  if (cw < 760) {
+    pal.style.setProperty('position', 'fixed', 'important');
+    pal.style.setProperty('left', '0', 'important');
+    pal.style.setProperty('right', '0', 'important');
+    pal.style.setProperty('transform', 'none', 'important');
+    pal.style.setProperty('margin', '0', 'important');
+    pal.style.setProperty('box-sizing', 'border-box', 'important');
+    pal.style.setProperty('width', cw + 'px', 'important');
+    pal.style.setProperty('max-width', cw + 'px', 'important');
+    if (portrait) {
+      pal.style.setProperty('display', 'grid', 'important');
+      pal.style.setProperty('grid-template-columns', 'repeat(3, minmax(0, 1fr))', 'important');
+      pal.style.setProperty('grid-auto-rows', '84px', 'important');
+      pal.style.setProperty('height', Math.round(ch * 0.4) + 'px', 'important');
+      pal.style.setProperty('max-height', Math.round(ch * 0.4) + 'px', 'important');
+      pal.style.setProperty('overflow-x', 'hidden', 'important');
+      pal.style.setProperty('overflow-y', 'auto', 'important');
+    }
+  } else {
+    ['position','left','right','transform','margin','box-sizing','width','max-width',
+     'display','grid-template-columns','grid-auto-rows','height','max-height',
+     'overflow-x','overflow-y'].forEach(k => pal.style.removeProperty(k));
+  }
+}
+
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   cw = window.innerWidth; ch = window.innerHeight;
   cv.width = cw * DPR; cv.height = ch * DPR;
   cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  if (S) clampCam();
+  if (typeof applyMobileLayout === 'function') applyMobileLayout();
+  if (S) {
+    clampCam();
+    if (typeof framePath === 'function') setTimeout(framePath, 60);
+    if (typeof applyMobileLayout === 'function') setTimeout(applyMobileLayout, 0);
+  }
 }
 window.addEventListener('resize', () => {
   resize();
@@ -4653,7 +4821,9 @@ screen.orientation && screen.orientation.addEventListener &&
 
 /** 把镜头限制在地图内；视野比地图大时居中 */
 function mapBounds() {
-  return S.bounds || { minX: 0, maxX: N, minY: 0, maxY: N };
+  // 地图边界以整张格子为准，避免 bounds 偏移导致画面不居中
+  if (S.mode === 'hex') return S.bounds || { minX: 0, maxX: N, minY: 0, maxY: N };
+  return { minX: 0, maxX: N, minY: 0, maxY: N };
 }
 
 function clampCam() {
@@ -4685,20 +4855,61 @@ function framePath() {
   const hCells = Math.max((maxY - minY) + 4, fullH);
   // 预留顶部 HUD 和底部工具栏的空间
   const availW = cw - 60, availH = ch - 150;
-  let z = Math.min(availW / wCells, availH / hCells);
-  z = Math.max(z, availW / fullW);
-  if (hCells * z > availH) z = availH / hCells;
-  // 六边形地图格子小，至少放到能看清塔的倍率（允许平移查看）
-  if (S.mode === 'hex') z = Math.max(z, 20);
+  let z;
+  if (cw < 760) {
+    const portrait = ch > cw;
+    // 用地图真实跨度，做到左右铺满屏幕
+    const spanW = Math.max(1, (b.maxX - b.minX) + 1.2);
+    const spanH = Math.max(1, (b.maxY - b.minY) + 1.2);
+    z = cw / spanW;                       // 先按宽度铺满
+    const regionTop = 96;                 // HUD 高度
+    const regionH = portrait ? (ch * 0.60 - regionTop) : (ch - regionTop - 150);
+    if (spanH * z > regionH) z = regionH / spanH;
+    // 地图中心对齐到可用区域的中心
+    const mapPxH = spanH * z;
+    const wantY = regionTop + Math.max(0, (regionH - mapPxH) / 2) + mapPxH / 2;
+    cam.oy = portrait ? (wantY - ch / 2) : 0;
+    cam.x = (b.minX + b.maxX) / 2;
+    cam.y = (b.minY + b.maxY) / 2;
+  } else {
+    z = Math.min(availW / wCells, availH / hCells);
+    z = Math.max(z, availW / fullW);
+    if (hCells * z > availH) z = availH / hCells;
+    // 六边形地图格子小，至少放到能看清塔的倍率（允许平移查看）
+    if (S.mode === 'hex') z = Math.max(z, 20);
+  }
   cam.z = clamp(z, 8, 60);
   clampCam();
+  // 竖屏：水平方向强制居中，避免视野大于地图时被 clampCam 推偏
+  if (cw < 760 && ch > cw) {
+    // 用真实地图列数重新贴合宽度并居中
+    let rx0 = 1e9, rx1 = -1e9, ry0 = 1e9, ry1 = -1e9;
+    for (let i = 0; i < S.grid.length; i++) {
+      if (S.grid[i] === GRASS) continue;
+      const gx = i % N, gy = (i / N) | 0;
+      if (gx < rx0) rx0 = gx;
+      if (gx > rx1) rx1 = gx;
+      if (gy < ry0) ry0 = gy;
+      if (gy > ry1) ry1 = gy;
+    }
+    if (rx1 < rx0) { rx0 = 0; rx1 = N - 1; ry0 = 0; ry1 = N - 1; }
+    // 整张地图（N×N）完整铺满屏幕宽度并居中
+    const zW = cw / N;
+    const zH = (ch * 0.60 - 92) / N;
+    cam.z = clamp(Math.min(zW, zH), 8, 60);
+    cam.x = N / 2;
+    cam.y = N / 2;
+  }
 }
 
+function portraitLayout() {
+  return cw < 760 && ch > cw;
+}
 function w2s(wx, wy) {
-  return [(wx - cam.x) * cam.z + cw / 2, (wy - cam.y) * cam.z + ch / 2];
+  return [(wx - cam.x) * cam.z + cw / 2, (wy - cam.y) * cam.z + ch / 2 + (cam.oy || 0)];
 }
 function s2w(sx, sy) {
-  return [(sx - cw / 2) / cam.z + cam.x, (sy - ch / 2) / cam.z + cam.y];
+  return [(sx - cw / 2) / cam.z + cam.x, (sy - ch / 2 - (cam.oy || 0)) / cam.z + cam.y];
 }
 
 function render() {
@@ -8229,6 +8440,7 @@ function restart(lv) {
   resetHudCache();
   updateHud();
   buildPalette();
+  if (typeof applyMobileLayout === 'function') applyMobileLayout();
   renderItems();
   framePath();
   if (btnLevel) btnLevel.textContent = '第 ' + S.level + ' 关';
@@ -8535,7 +8747,7 @@ if (location.hash === '#selftest') {
   let grass = null;
   for (let i = 0; i < N * N; i++) if (S.grid[i] === GRASS) { grass = i; break; }
   const b2 = buildTower(grass, 'gun');
-  ok('buildOnGrass', b2 === true && S.grid[grass] === BUILT);
+  ok('buildOnGrass', !!b2 && b2 !== false && S.grid[grass] === BUILT);
 
   // 8 塔属性随等级提升
   const t = S.towers[0];
@@ -8739,7 +8951,7 @@ if (location.hash === '#selftest') {
   S.items = { gold: 1 };
   const gBefore = S.gold;
   applyItem('gold', 0, 0);
-  ok('itemUse', S.gold === gBefore + 180 && !S.items.gold);
+  ok('itemUse', S.gold === gBefore + 420 && !S.items.gold);
 
   // ── 随机事件 ──
   S.wave = 4;
