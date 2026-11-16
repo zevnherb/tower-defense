@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>塔防 · Grid Defense 50</title>
 <style>
   :root{
@@ -34,7 +37,7 @@
   .btn:hover{color:var(--ink);border-color:rgba(255,255,255,.28)}
   .btn.on{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:650}
 
-  .palette{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
+  .palette{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
            display:flex;gap:8px;background:var(--panel);border:1px solid var(--line);
            border-radius:16px;padding:10px;backdrop-filter:blur(12px);z-index:10}
   .tw{width:74px;border-radius:11px;border:1px solid transparent;background:rgba(255,255,255,.03);
@@ -197,6 +200,23 @@
   }
   #credit b { color: rgba(110, 168, 255, .8); font-weight: 700; }
 
+  /* ── 手机：基地面板改成满宽，避免居中偏移 ── */
+  @media (max-width: 760px) {
+    #basePanel {
+      left: 8px;
+      right: 8px;
+      width: auto;
+      max-width: none;
+      top: 50%;
+      transform: translateY(-50%);
+      padding: 12px 14px;
+      box-sizing: border-box;
+    }
+    #basePanel h3 { font-size: 15px; }
+    #basePanel p { font-size: 12px; }
+    #basePanel .btn { padding: 9px 10px; font-size: 13px; }
+  }
+
   /* ── 手机：事件栏缩小，别挡地图 ── */
   @media (max-width: 760px) {
     .log {
@@ -320,6 +340,34 @@
     .tw canvas { width: 50px; height: 50px; }
     #credit { font-size: 11px; right: 10px; bottom: 86px; }
   }
+
+  /* ── iOS / 移动端通用修正 ── */
+  html, body {
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    height: 100%;
+  }
+  body {
+    height: 100vh;
+    height: 100dvh;              /* 支持 iOS 动态视口 */
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+  }
+  #cv, canvas {
+    touch-action: none;
+    -webkit-touch-callout: none;
+  }
+  .hud, #basePanel, .palette {
+    -webkit-backdrop-filter: blur(6px);
+  }
+  /* 刘海屏安全区 */
+  .hud { padding-top: max(10px, env(safe-area-inset-top)); }
+  .palette { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
 </style>
 </head>
 <body>
@@ -336,11 +384,11 @@
     <button class="btn" id="btnWave">开始第 1 波</button>
     <button class="btn" id="btnSpeed">1×</button>
     <button class="btn" id="btnPause">暂停</button>
-    <button class="btn all" id="btnAllSkill">全体技能</button>
+    <button class="btn" id="btnAutoBuild">自动建造</button>
+    <button class="btn on" id="btnAutoSkill">自动技能</button>
     <button class="btn" id="btnBase">基地强化</button>
     <button class="btn" id="btnBgm">音乐</button>
     <button class="btn" id="btnLevel">第 1 关</button>
-    <button class="btn" id="btnBestiary">怪物图鉴</button>
     <button class="btn" id="btnRestart">重开</button>
   </div>
 </div>
@@ -667,6 +715,7 @@ const TOWER_ACTIVE = {
   tesla:  { name: '雷暴', cd: 34, desc: '对全场每个敌人放电 90 伤害' },
   aa:     { name: '弹幕拦截', cd: 24, dur: 3, desc: '全场空中敌人眩晕 3 秒' },
   wind: { name: '飓风', cd: 28, dur: 6, desc: '全场飞行单位倒退 4 秒' },
+  holy: { name: '圣域', cd: 26, dur: 5, desc: '范围内其他炮塔 5 秒无敌' },
   barracks: { name: '增援', cd: 30, dur: 6, desc: '立刻补齐所有士兵，6 秒内伤害 +60%' },
   poison: { name: '毒雾爆发', cd: 30, desc: '射程内敌人立刻中剧毒' },
   magnet: { name: '引力坍缩', cd: 34, desc: '把地面敌人往回推' },
@@ -776,7 +825,7 @@ FLOCK_IMG.src = FLOCK_IMG_B64;
 const BOSS_IMG = {};
 for (const _k in BOSS_IMG_B64) { const _im = new Image(); _im.src = BOSS_IMG_B64[_k]; BOSS_IMG[_k] = _im; }
 
-const TOWER_KEYS = ['gun', 'cannon', 'frost', 'sniper', 'flame', 'tesla', 'aa', 'barracks',
+const TOWER_KEYS = ['gun', 'cannon', 'frost', 'sniper', 'flame', 'tesla', 'aa',
   'poison', 'magnet', 'holy', 'missile', 'totem',
   'railgun', 'wind'];
 
@@ -846,7 +895,7 @@ const ENEMY_DEF = {
             skill: '插图腾·引爆', skillDesc: '范围内怪物死亡时爆炸，伤害周围同伴' },
   tmfly:    { name: '浮空法师', hp: 520, speed: 0.95, gold: 34, r: 0.32, color: '#c084fc', shape: 'circle',
             skill: '插图腾·浮空', skillDesc: '范围内怪物浮空，地面塔打不到' },
-  flock: { name: '鸟群', hp: 120, speed: 0.60, gold: 14, r: 0.72, color: '#6b7f9a', shape: 'tri',
+  flock: { name: '鸟群', hp: 120, speed: 0.60, gold: 4, r: 0.72, color: '#6b7f9a', shape: 'tri',
             flying: true, noLeak: true, skill: '盘旋', skillDesc: '10 只一起在地图上空盘旋，纯干扰视线' },
   tpmage: { name: '传送法师', hp: 480, speed: 0.92, gold: 38, r: 0.32, color: '#a78bfa', shape: 'circle',
             skill: '空间跃迁', skillDesc: '与场上任意怪物互换位置；死亡时把附近炮塔传走' },
@@ -1088,7 +1137,7 @@ function hexAt(g, wx, wy) {
 /** 蛇形穿越大半个六边形 */
 function buildHexPath(g) {
   const rows = [];
-  for (let r = -g.R; r <= g.R; r += 4) rows.push(r);
+  for (let r = -g.R; r <= g.R; r += 7) rows.push(r);
   if (rows[rows.length - 1] !== g.R) rows.push(g.R);
 
   const path = [];
@@ -1130,7 +1179,7 @@ function buildHexPath(g) {
 /** 画一个六边形 */
 function buildHexPathB(g, mainIds) {
   const rows = [];
-  for (let r = -g.R + 2; r <= g.R - 2; r += 4) rows.push(r);
+  for (let r = -g.R + 3; r <= g.R - 3; r += 7) rows.push(r);
 
   const path = [];
   const used = new Set();
@@ -1196,7 +1245,7 @@ function newState(keepSeed, level) {
   const st = {
     level: lv,
     mode: lv === 2 ? 'hex' : 'square',
-    routeCount: lv === 2 ? 1 : (lv === 3 ? 3 : 2),
+    routeCount: lv === 1 ? 2 : 1,
     grid: new Uint8Array(N * N),
     obs: [],
     obsAt: new Int32Array(N * N).fill(-1),
@@ -1257,7 +1306,16 @@ function newState(keepSeed, level) {
     if (okFar) break;
     gen = makeGen();
   }
-  st.routes = gen.routes;
+  // 丢弃没有接入主干的断头支路（避免怪走到断点）
+  {
+    const trunk = gen.routes[0] || [];
+    st.routes = gen.routes.filter((r, ri) => {
+      if (ri === 0 || !r || !r.length) return true;
+      const last = r[r.length - 1];
+      return trunk.some(c => Math.abs(c.x - last.x) + Math.abs(c.y - last.y) <= 1);
+    });
+    if (!st.routes.length) st.routes = gen.routes;
+  }
   st.trunk = gen.trunk;
   st.mergeIdx = gen.mergeIdx;
 
@@ -1320,7 +1378,7 @@ function newState(keepSeed, level) {
   st.nestT = 0;
 
   // 两个入口 + 一个基地
-  st.spawns = [st.routes[0][0], st.routes[1][0]];
+  st.spawns = [st.routes[0][0], (st.routes[1] || st.routes[0])[0]];
   st.spawn = st.spawns[0];
   st.base = st.trunk[st.trunk.length - 1];
 
@@ -1620,11 +1678,14 @@ function waveComposition(w) {
   if (w >= 5) add('levitator', 1);
   if (w >= 5) add('ufo', 1 + Math.floor((w - 5) / 10));
   if (w >= 6 && w % 2 === 0) add('rider', 2 + Math.floor(w / 7));
-  if (w >= 12 && w % 3 === 0) add('flock', w >= 15 ? 200 : 100);
+  if (w >= 12 && w % 3 === 0) add('flock', w >= 15 ? 140 : 70);
   if (w >= 2) {
     add('totemMage', 1 + Math.floor(w / 14));
   }
   if (w <= 5) add('dragonYoung', 1 + (w >= 4 ? 1 : 0));
+  if (w === 12 || w === 18) add('dragonYoung', 10);
+  if (w >= 8 && w % 6 === 0) add('dragonYoung', 3 + Math.floor(w / 10));
+  if (w >= 24 && w % 6 === 0) add('dragon', 1);
   if (w % 5 === 0) add('boss', 1 + Math.floor(w / 15));
   if (w === 20 || w === 25 || w === 30) {
     add('giantSaucer', 1); add('giantBalloon', 1); add('giantBomber', 1);
@@ -1725,7 +1786,13 @@ function evMul(key) {
 const _drawBuf = [];
 
 function spawnEnemy(type, hpScale, route, opts) {
-  if (S.enemies.length >= 520) return;   // 数量上限，防止召唤/空投导致卡顿
+  if (S.enemies.length >= 520) return;
+  // 出生点兜底：路线被裁剪/未定义时不要让游戏崩掉
+  if (!S.spawns || !S.spawns.length || !S.spawns[0]) {
+    S.spawns = (S.routes && S.routes[0] && S.routes[0].length)
+      ? [S.routes[0][0], S.routes[0][0]] : [];
+    if (!S.spawns.length) return;
+  }   // 数量上限，防止召唤/空投导致卡顿
   if (!ENEMY_DEF[type]) {
     console.warn('[TD] 未知怪物类型：', type);
     type = 'normal';
@@ -1768,7 +1835,7 @@ function spawnEnemy(type, hpScale, route, opts) {
   }
   if (d.flying) {
     e.flying = true;
-    const start = opts.start || S.spawns[r % 2];
+    const start = opts.start || S.spawns[r % 2] || S.spawns[0];
     e.fx0 = start.x + 0.5;
     e.fy0 = start.y + 0.5;
     e.fx1 = S.base.x + 0.5;
@@ -1855,6 +1922,25 @@ function towerStats(t) {
     if (s.dmg) s.dmg *= 1 + gd;
     if (s.dps) s.dps *= 1 + gd;
     if (s.rate) s.rate *= 1 - gr;
+  }
+
+  // 图腾塔光环：范围内炮塔射速提升（图腾塔本身不享受）
+  if (t.type !== 'totem') {
+    let aura = 0;
+    for (const o of S.towers) {
+      if (o === t || o.type !== 'totem') continue;
+      const d = dist(o.x + 0.5, o.y + 0.5, t.x + 0.5, t.y + 0.5);
+      if (d > 3.6) continue;
+      aura = Math.max(aura, 0.22);
+    }
+    if (aura > 0) {
+      s.rate *= (1 - aura);
+      t.totemAura = true;
+      t.totemBonus = aura;
+    } else {
+      t.totemAura = false;
+      t.totemBonus = 0;
+    }
   }
 
   // 巨石阵加成
@@ -2005,6 +2091,10 @@ function pickTarget(t, range) {
 
 function damageEnemy(e, dmg, src) {
   if (e.dead) return 0;
+  if (e.invulnT > 0) {
+    if (Math.random() < 0.25) addFx(e.x, e.y, 'chip', 0.18);
+    return 0;
+  }
   if (e.evadeBuff && Math.random() < e.evadeBuff) { addFx(e.x, e.y, 'chip', 0.2); return 0; }
   if (e.armorBuff) dmg *= e.armorBuff;
   if (e.type === 'ufo') e.hitAcc = (e.hitAcc || 0) + dmg;
@@ -2121,9 +2211,14 @@ function damageEnemy(e, dmg, src) {
       announce('黑洞坍缩！', '#ff9f43');
       logEvent('黑洞坍缩，范围内的炮塔受到重创', 'boss');
     }
-    if (e.splitBuff) {
+    if (e.splitBuff && !e.noSplit) {
+      // 分裂出来的小怪不再分裂，也不掉钱，避免无限刷
       for (let kk = 0; kk < 2; kk++) {
-        spawnEnemy('normal', 0.6, e.route || 0, { t: Math.max(0, e.t - 1 - kk) });
+        spawnEnemy('normal', 0.6, e.route || 0, {
+          t: Math.max(0, e.t - 1 - kk),
+          noSplit: true,
+          gold: 1,
+        });
       }
       addFx(e.x, e.y, 'boom', 0.5);
     }
@@ -2534,6 +2629,102 @@ function spawnRegenObstacle() {
   return false;
 }
 
+let autoBuild = false, autoBuildT = 1.5;
+let autoSkill = true, autoSkillT = 1;
+
+function tryUpgradeAuto(t) {
+  const def = TOWER_DEF[t.type];
+  if (!def) return false;
+  let cost = 0;
+  if (t.level === 1) cost = costOf(def.lv[1].cost);
+  else if (t.level === 2) cost = costOf(def.evolve[0].cost);
+  else if (t.level === 3) cost = costOf(def.evolve[t.branch || 0].l4.cost);
+  else return false;
+  if (S.gold < cost) return false;
+  S.gold -= cost;
+  t.totalCost = (t.totalCost || 0) + cost;
+  if (t.level === 1) t.level = 2;
+  else if (t.level === 2) { t.level = 3; t.branch = 0; }
+  else t.level = 4;
+  addFx(t.x + 0.5, t.y + 0.5, 'gold', 0.9, 'Lv' + t.level);
+  sfx('upgrade');
+  return true;
+}
+
+function findBuildSpot() {
+  let best = -1, bd = 1e9;
+  for (let i = 0; i < S.grid.length; i++) {
+    if (S.grid[i] !== GRASS) continue;
+    if (S.towers.some(t => t.cell === i)) continue;
+    const cw = cellCenter(i);
+    if (!cw) continue;
+    // 必须靠近路径（有打击价值）
+    let d = 1e9;
+    for (const c of S.path) {
+      const dd = dist(cw.x, cw.y, c.x + 0.5, c.y + 0.5);
+      if (dd < d) d = dd;
+    }
+    if (d < 0.80 || d > 6.0) continue;
+    // 优先从基地附近向外铺开
+    const db = dist(cw.x, cw.y, S.base.x + 0.5, S.base.y + 0.5);
+    if (db < bd) { bd = db; best = i; }
+  }
+  return best;
+}
+
+const AUTO_TYPES = ['gun', 'cannon', 'frost', 'sniper', 'aa', 'tesla', 'poison', 'wind', 'holy', 'missile'];
+
+function autoTowerTick(dt) {
+  if (!autoBuild) return;
+  autoBuildT -= dt;
+  if (autoBuildT > 0) return;
+  autoBuildT = 0.8;
+
+  const cap = 200;                              // 上限 200 座
+  const upg = S.towers.filter(t => t.level < 4)
+    .sort((a, b) => (a.totalCost || 0) - (b.totalCost || 0))[0];
+
+  // 金币充裕时优先提升质量
+  if (upg && S.gold > 2600 && Math.random() < 0.45) {
+    if (tryUpgradeAuto(upg)) { updateHud(); return; }
+  }
+
+  if (S.towers.length < cap) {
+    const cid = findBuildSpot();
+    if (cid >= 0) {
+      const type = AUTO_TYPES[(Math.random() * AUTO_TYPES.length) | 0];
+      if (buildTower(cid, type)) { updateHud(); return; }
+    }
+  }
+
+  // 建不了就升级
+  if (upg && tryUpgradeAuto(upg)) updateHud();
+}
+
+function autoSkillTick(dt) {
+  if (!autoSkill) return;
+  autoSkillT -= dt;
+  if (autoSkillT > 0) return;
+  autoSkillT = 0.7;
+
+  const bx = S.base.x + 0.5, by = S.base.y + 0.5;
+  let near = 0;
+  for (const e of S.enemies) {
+    if (e.dead) continue;
+    if (dist(e.x, e.y, bx, by) < 9) near++;
+  }
+  const bossOn = S.enemies.some(e => !e.dead && (e.giant || e.type === 'boss' || e.type === 'dragon'));
+  if (!(near >= 6 || S.lives <= 8 || bossOn)) return;
+
+  for (const t of S.towers) {
+    if (!TOWER_ACTIVE[t.type]) continue;
+    if (t.cdActive > 0) continue;
+    if (t.sealed || t.suppressedBy || t.vineT > 0) continue;
+    useActive(t);
+    return;
+  }
+}
+
 function updateVines(dt) {
   let hasVine = false;
   for (const o of S.obs) { if (o.kind === 'vine' && o.hp > 0) { hasVine = true; break; } }
@@ -2645,6 +2836,22 @@ function useActive(t) {
   addFx(cx, cy, 'gold', 1.1, act.name);
 
   switch (t.type) {
+    case 'holy': {
+      t.invulnT = 5;
+      let cnt = 0;
+      for (const o of S.towers) {
+        if (o === t) continue;
+        if (dist(cx, cy, o.x + 0.5, o.y + 0.5) > st.range) continue;
+        o.invulnT = Math.max(o.invulnT || 0, 5);
+        o.litHoly = 0.4;
+        cnt++;
+        addFx(o.x + 0.5, o.y + 0.5, 'tp', 0.55);
+      }
+      addFx(cx, cy, 'boom', 0.8);
+      toast('圣域展开：' + (cnt + 1) + ' 座炮塔 5 秒无敌');
+      sfx('upgrade');
+      break;
+    }
     case 'gun':
       t.activeT = act.dur;
       break;
@@ -3019,6 +3226,22 @@ function updateZones(dt) {
   S.zones = S.zones.filter(z => z.life > 0 && !(z.kind === 'ice' && z.hp <= 0));
 }
 
+function dropLevitator(e) {
+  if (e.dropped) return;
+  e.dropped = true;
+  e.dead = true;
+  const len = S.routes[e.route || 0].length;
+  for (let k = 0; k < 5; k++) {
+    spawnEnemy(['normal', 'fast', 'tank', 'splitter', 'armored'][k % 5], 1, e.route,
+      { t: Math.floor(len * (0.35 + k * 0.05)), gold: 5 });
+  }
+  addFx(e.x, e.y, 'boom', 0.9);
+  announce('空投！', '#7fe3ff');
+  shake(0.3);
+  sfx('event');
+  logEvent('浮空法师投放了 5 只怪物', 'boss');
+}
+
 function updateGiant(e, dt) {
   const b = mapBounds();
   e.gt = (e.gt || 0) + dt;
@@ -3047,6 +3270,7 @@ function updateGiant(e, dt) {
   e.x += dx2 / dd2 * step2;
   e.y += dy2 / dd2 * step2;
   e.gvx = dx2 / dd2;
+  e.gvy = dy2 / dd2;
 
   // 各自的姿态摆动
   if (e.giant === 'saucer') {
@@ -3063,6 +3287,31 @@ function updateGiant(e, dt) {
   e.x = clamp(e.x, b.minX + 2, b.maxX - 2);
   e.y = clamp(e.y, b.minY + 2, b.maxY - 2);
 
+  // ── 外星侦察机：半血护盾 + 濒死超级轰炸 ──
+  if (e.giant === 'bomber') {
+    e.invulnT = Math.max(0, (e.invulnT || 0) - dt);
+    e.shieldCd = (e.shieldCd == null ? 10 : e.shieldCd) - dt;
+    const hpr2 = e.hp / e.maxHp;
+    if (hpr2 <= 0.5 && e.shieldCd <= 0) {
+      e.shieldCd = 10;
+      e.invulnT = 5;
+      addFx(e.x, e.y, 'bombwave', 1.1);
+      addFx(e.x, e.y, 'tp', 0.9);
+      announce('护盾展开｜5 秒无敌', '#7fe3ff');
+      sfx('event');
+      logEvent('侦察机展开护盾，5 秒内免疫伤害', 'boss');
+    }
+    if (hpr2 <= 0.05 && !e.superAnnounced) {
+      e.superAnnounced = true;
+      e.invulnT = Math.max(e.invulnT || 0, 5);
+      addFx(e.x, e.y, 'bombwave', 1.2);
+      announce('超级广域轰炸！护盾展开', '#ff6b3d');
+      shake(0.8);
+      sfx('boss');
+      logEvent('侦察机进入濒死状态，开始超级广域轰炸', 'boss');
+    }
+  }
+
   e.gcd = (e.gcd == null ? 4 : e.gcd) - dt;
   if (e.gcd > 0) return;
   const kind = e.giant;
@@ -3070,8 +3319,10 @@ function updateGiant(e, dt) {
   const fast20 = S.wave >= 20 ? 2 : 1;   // 20 波后技能速度翻倍
   if (kind === 'saucer') {
     e.gcd = ((late ? 9 : 26) / (S.wave >= 10 ? 1.8 : 1)) / fast20;
+    // 小飞碟数量上限：10 波 4 只，16 波 8 只，20 波 12 只
+    const cap = S.wave >= 20 ? 12 : (late ? 8 : 4);
     const alive = S.enemies.filter(o => !o.dead && o.type === 'ufo').length;
-    if (late || alive < 4) spawnEnemy('ufo', 1, 0, { gold: 5 });
+    if (alive < cap) spawnEnemy('ufo', 1, 0, { gold: 5 });
     addFx(e.x, e.y, 'boom', 0.8);
   } else if (kind === 'balloon') {
     e.gcd = (late ? 3.2 : 5) / fast20;
@@ -3084,15 +3335,31 @@ function updateGiant(e, dt) {
     addFx(e.x, e.y, 'boom', 1.0);
     sfx('event');
   } else {
-    e.gcd = (late ? 2.6 : 4) / fast20;
-    const bombs = late ? 2 : 1;
-    for (let k = 0; k < bombs && S.towers.length; k++) {
-      const tw = S.towers[(Math.random() * S.towers.length) | 0];
-      damageTower(tw, late ? 46 : 38);
-      addFx(tw.x + 0.5, tw.y + 0.5, 'boom', 0.85);
+    // 高频 · 低伤 · 广域轰炸（濒死时超级模式）
+    const sup = e.hp / e.maxHp <= 0.05;
+    const w18 = S.wave >= 18;          // 18 波后进入削弱档
+    e.gcd = sup ? 0.30 : (w18 ? 0.62 : (late ? 0.45 : 0.58));
+    const bombs = sup ? 5 : (w18 ? 3 : (late ? 4 : 3));
+    const rad = sup ? 4.0 : 2.4;
+    const bdmg = sup ? 7 : (w18 ? 8 : (late ? 11 : 9));
+    for (let k = 0; k < bombs; k++) {
+      let bx, by;
+      if (!sup && S.towers.length && Math.random() < 0.75) {
+        const tw = S.towers[(Math.random() * S.towers.length) | 0];
+        bx = tw.x + 0.5 + rnd(-2.2, 2.2);
+        by = tw.y + 0.5 + rnd(-2.2, 2.2);
+      } else {
+        const pp = pathPos(Math.floor(Math.random() * (S.routes[0].length - 2)), 0);
+        bx = pp.x; by = pp.y;
+      }
+      addFx(bx, by, 'bombwave', sup ? 1.5 : 1.05);
+      if (sup) addFx(bx, by, 'boom', 0.6);
+      for (const tw of S.towers.slice()) {
+        if (dist(bx, by, tw.x + 0.5, tw.y + 0.5) <= rad) damageTower(tw, bdmg);
+      }
     }
-    shake(0.25);
-    sfx('boom');
+    shake(0.16);
+    sfx('bomb');
     if (late && Math.random() < 0.5) {
       const fake = { x: e.x - 0.5, y: e.y - 0.5, t: Math.floor(S.routes[0].length * 0.5), route: 0 };
       plantTotem(fake, TOTEM_VARIANTS[(Math.random() * TOTEM_VARIANTS.length) | 0], 0);
@@ -3162,6 +3429,7 @@ function updateBaseFire(dt) {
 }
 
 function damageTower(t, dmg) {
+  if (t.invulnT > 0) { addFx(t.x + 0.5, t.y + 0.5, 'chip', 0.15); return; }
   t.hp = (t.hp == null ? 100 : t.hp) - dmg;
   if (t.hp > 0) return;
   const refund = Math.floor((t.totalCost || 0) * 0.6);
@@ -3475,15 +3743,16 @@ function drawGiant(e) {
     ctx.restore();
   }
 
-  // 侦察机：尾焰
+  // 侦察机：尾焰（沿航向反方向）
   if (e.giant === 'bomber') {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const dir = (e.gvx || 0.3) > 0 ? 1 : -1;
+    const hd = Math.atan2(e.gvy || 0, e.gvx || 1);
     for (let i = 0; i < 4; i++) {
       const ph = ((S.time * 3 + i * 0.25) % 1);
-      const fx2 = q[0] - dir * R * (0.55 + ph * 0.9);
-      const fy2 = cy + Math.sin(i * 2 + S.time * 9) * R * 0.06;
+      const back = R * (0.55 + ph * 0.9);
+      const fx2 = q[0] - Math.cos(hd) * back + Math.cos(hd + Math.PI / 2) * Math.sin(i * 2 + S.time * 9) * R * 0.06;
+      const fy2 = cy - Math.sin(hd) * back + Math.sin(hd + Math.PI / 2) * Math.sin(i * 2 + S.time * 9) * R * 0.06;
       ctx.fillStyle = 'rgba(190,130,255,' + (1 - ph) * 0.7 + ')';
       ctx.beginPath(); ctx.arc(fx2, fy2, R * 0.10 * (1 - ph * 0.6), 0, Math.PI * 2); ctx.fill();
     }
@@ -3495,7 +3764,8 @@ function drawGiant(e) {
     ctx.save();
     ctx.translate(q[0], cy);
     if (e.giant === 'bomber') {
-      ctx.rotate((e.gvx || 0.3) > 0 ? -0.10 : 0.10);
+      // 机头朝前：贴图机头朝右，按航向旋转
+      ctx.rotate(Math.atan2(e.gvy || 0, e.gvx || 1));
     } else if (e.giant === 'balloon') {
       ctx.rotate(S.time * 0.5);
     } else {
@@ -3521,6 +3791,38 @@ function drawGiant(e) {
   ctx.font = '700 ' + Math.max(9, cam.z * 0.24) + 'px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText(d.name, q[0], barY - 3);
+
+  // 无敌护盾
+  if (e.giant === 'bomber' && e.invulnT > 0) {
+    const k6 = clamp(e.invulnT / 5, 0, 1);
+    const pr = R * 1.35;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const sg = ctx.createRadialGradient(q[0], cy, pr * 0.7, q[0], cy, pr);
+    sg.addColorStop(0, 'rgba(120,220,255,0)');
+    sg.addColorStop(0.75, 'rgba(120,220,255,' + (0.16 + 0.10 * Math.sin(S.time * 8)) + ')');
+    sg.addColorStop(1, 'rgba(160,240,255,' + (0.42 * k6) + ')');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(q[0], cy, pr, 0, Math.PI * 2); ctx.fill();
+    // 六边形网格
+    ctx.strokeStyle = 'rgba(180,240,255,' + (0.45 * k6) + ')';
+    ctx.lineWidth = Math.max(1, cam.z * 0.04);
+    for (let ring = 0; ring < 2; ring++) {
+      const rr = pr * (0.55 + ring * 0.42);
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a6 = i * Math.PI / 3 + S.time * 0.6;
+        const px = q[0] + Math.cos(a6) * rr, py = cy + Math.sin(a6) * rr;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.stroke();
+    }
+    // 脉冲边缘
+    ctx.strokeStyle = 'rgba(200,250,255,' + (0.55 * k6) + ')';
+    ctx.lineWidth = Math.max(1.5, cam.z * 0.06);
+    ctx.beginPath(); ctx.arc(q[0], cy, pr * (0.98 + 0.03 * Math.sin(S.time * 10)), 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
   ctx.textAlign = 'start';
 }
 
@@ -3614,7 +3916,7 @@ function plantTotem(e, variant, tOff) {
   const cw = cellCenter(cellIdAt(wx0, wy0));
   const gx = cw ? cw.x : wx0;
   const gy = cw ? cw.y : wy0;
-  const hp = 950 + S.wave * 75;
+  const hp = 1200 + S.wave * 220;
   const cellId = cellIdAt(wx0, wy0);
   const tm = {
     kind: 'totem', variant: variant, size: 1,
@@ -3803,7 +4105,7 @@ function update(dt) {
       if (tm2.variant === 'decay') {
         for (const tw3 of S.towers) {
           if (dist(tw3.x + 0.5, tw3.y + 0.5, tm2.cx, tm2.cy) > tm2.r) continue;
-          damageTower(tw3, 3 * dt);
+          damageTower(tw3, 1.5 * dt);
         }
       }
       if (tm2.variant === 'blind') {
@@ -4041,23 +4343,22 @@ function update(dt) {
     }
     if (e.markT > 0) e.markT -= dt;
 
+    // 浮空法师：飞抵基地附近或到达终点就投放
+    if (e.type === 'levitator' && !e.dropped) {
+      const bx2 = S.base.x + 0.5, by2 = S.base.y + 0.5;
+      if (dist(e.x, e.y, bx2, by2) < 3.5 || e.t >= e.flyLen - 0.5) {
+        dropLevitator(e);
+        continue;
+      }
+    }
+
     const done = e.flying
       ? (e.t >= e.flyLen)
       : (e.t >= S.routes[e.route].length - 1);
 
     if (done) {
       if (e.type === 'levitator') {
-        e.dead = true;
-        const len = S.routes[e.route || 0].length;
-        for (let k = 0; k < 5; k++) {
-          spawnEnemy(['normal', 'fast', 'tank', 'splitter', 'armored'][k % 5], 1, e.route,
-            { t: Math.floor(len * (0.35 + k * 0.05)), gold: 5 });
-        }
-        addFx(e.x, e.y, 'boom', 0.9);
-        announce('空投！', '#7fe3ff');
-        shake(0.3);
-        sfx('event');
-        logEvent('浮空法师投放了 5 只怪物', 'boss');
+        dropLevitator(e);
         continue;
       }
       e.dead = true;
@@ -4103,10 +4404,13 @@ function update(dt) {
   if (S.soldiers.length || S.towers.some(t => t.type === 'barracks')) updateSoldiers(dt);
   if (S.zones.length) updateZones(dt);
   updateSpikes(dt);
+  autoTowerTick(dt);
+  autoSkillTick(dt);
   updateVines(dt);
   updateBaseFire(dt);
 
   for (const t of S.towers) {
+    if (t.invulnT > 0) t.invulnT -= dt;
     if (t.litHoly > 0) t.litHoly -= dt;
     if (t.litTotem > 0) t.litTotem -= dt;
   }
@@ -4116,12 +4420,12 @@ function update(dt) {
     if (ht.type !== 'holy') continue;
     const hs = towerStats(ht);
     for (const tw of S.towers) {
-      if (tw === ht) continue;
       if (dist(ht.x + 0.5, ht.y + 0.5, tw.x + 0.5, tw.y + 0.5) > hs.range) continue;
-      if ((tw.hp || 100) < (tw.maxHp || 100)) {
-        tw.hp = Math.min(tw.maxHp || 100, (tw.hp || 100) + 9 * dt);
-        tw.litHoly = 0.25;
-      }
+      if ((tw.hp || 100) >= (tw.maxHp || 100)) continue;
+      // 自己只能缓慢自愈（约 40% 效率）
+      const rate = (tw === ht) ? 3.6 : 9;
+      tw.hp = Math.min(tw.maxHp || 100, (tw.hp || 100) + rate * dt);
+      tw.litHoly = 0.25;
     }
   }
 
@@ -4179,9 +4483,9 @@ function update(dt) {
     S.nextT = 20;
     toast('第 ' + S.wave + ' 波结束  +' + bonus + ' 金币');
     updateHud();
-    if (S.wave >= WAVE_MAX && !S.won && S.enemies.length === 0) {
-      S.won = true;
-      gameOver(true);
+    if (S.wave >= WAVE_MAX && !S.won && !S.awaitChoice && S.enemies.length === 0) {
+      S.awaitChoice = true;
+      showEndChoice();
     }
   }
   updateHud();
@@ -4266,6 +4570,49 @@ function impact(s) {
     }
   }
   addFx(e.x, e.y, 'hit', 0.2);
+}
+
+function showEndChoice() {
+  S.paused = true;
+  const old = document.getElementById('endChoice');
+  if (old) old.remove();
+  const d = document.createElement('div');
+  d.id = 'endChoice';
+  d.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;' +
+    'background:rgba(4,6,11,.82);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)';
+  d.innerHTML =
+    '<div style="background:#0e131a;border:1px solid rgba(110,168,255,.35);border-radius:16px;' +
+    'padding:26px 30px;text-align:center;max-width:400px;width:calc(100% - 40px)">' +
+    '<div style="font-size:21px;font-weight:800;color:#5ff0b0;margin-bottom:6px">守住了全部 30 波</div>' +
+    '<div style="font-size:13px;color:#7f8da0;margin-bottom:22px">剩余血量 ' + S.lives +
+    ' · 击杀 ' + S.kills + ' 只怪物</div>' +
+    '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
+    '<button id="ecEndless" style="flex:1;min-width:130px;padding:11px 16px;border-radius:10px;cursor:pointer;' +
+    'border:1px solid rgba(110,168,255,.5);background:rgba(110,168,255,.18);color:#cfe0ff;font-size:14px;' +
+    'font-weight:700;font-family:inherit">进入无尽模式</button>' +
+    '<button id="ecWin" style="flex:1;min-width:130px;padding:11px 16px;border-radius:10px;cursor:pointer;' +
+    'border:1px solid rgba(95,240,176,.5);background:rgba(95,240,176,.16);color:#5ff0b0;font-size:14px;' +
+    'font-weight:700;font-family:inherit">直接胜利</button>' +
+    '</div>' +
+    '<div style="font-size:11px;color:#5a6779;margin-top:14px">无尽模式：波次无限延续，难度持续上升</div>' +
+    '</div>';
+  document.body.appendChild(d);
+
+  document.getElementById('ecEndless').onclick = () => {
+    d.remove();
+    S.awaitChoice = false;
+    S.paused = false;
+    toast('无尽模式 · 继续挑战');
+    announce('无尽模式', '#ffcf6b');
+    sfx('win');
+  };
+  document.getElementById('ecWin').onclick = () => {
+    d.remove();
+    S.awaitChoice = false;
+    S.won = true;
+    S.paused = false;
+    gameOver(true);
+  };
 }
 
 function gameOver(won) {
@@ -6514,6 +6861,38 @@ function drawFx(f) {
     }
     ctx.globalAlpha = 1;
     ctx.restore();
+  } else if (f.type === 'bombwave') {
+    const k3 = 1 - k;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // 冲击波环
+    for (let i = 0; i < 2; i++) {
+      const t3 = clamp(k3 * 1.5 - i * 0.25, 0, 1);
+      if (t3 <= 0) continue;
+      ctx.strokeStyle = 'rgba(255,' + (170 - i * 40) + ',80,' + (k * 0.85) + ')';
+      ctx.lineWidth = Math.max(1.5, cam.z * 0.10 * (1 - t3 * 0.6));
+      ctx.beginPath();
+      ctx.arc(sx, sy, cam.z * 2.4 * t3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // 核心闪光
+    if (k3 < 0.55) {
+      const fk = 1 - k3 / 0.55;
+      ctx.fillStyle = 'rgba(255,240,190,' + (fk * 0.9) + ')';
+      ctx.beginPath();
+      ctx.arc(sx, sy, cam.z * 0.65 * fk, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 飞散碎片
+    for (let i = 0; i < 7; i++) {
+      const a3 = i * 0.9 + (f.seed || 0);
+      const rr = cam.z * 2.2 * k3;
+      ctx.fillStyle = 'rgba(255,' + (150 + (i * 17) % 80) + ',70,' + (k * 0.8) + ')';
+      ctx.beginPath();
+      ctx.arc(sx + Math.cos(a3) * rr, sy + Math.sin(a3) * rr, cam.z * 0.10 * (1 - k3 * 0.5), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   } else if (f.type === 'tp') {
     const grow = 1 - k;
     ctx.save();
@@ -6926,6 +7305,7 @@ function updateHud() {
 function resetHudCache() { hudCache = { gold: -1, lives: -1, wave: -1, enemy: -1, active: null, next: -99 }; }
 
 function setBuild(k) {
+  if (k === 'spike' || k === 'barracks') { toast('该建筑已移除'); return; }
   S.build = (S.build === k) ? null : k;
   S.selected = null;
   document.querySelectorAll('.tw').forEach(el => {
@@ -6975,6 +7355,15 @@ function renderPanel() {
   if (st.crit) rows.push('暴击 <span>' + Math.round(st.crit * 100) + '%</span>');
   if (st.cluster) rows.push('集束 <span>' + Math.round(st.cluster) + '</span> 个');
   if (t.boon) rows.push('<span style="color:#ffd76a">符文地块 +25% 伤害 / +10% 射程</span>');
+  if (t.high) rows.push('<span style="color:#a3e635">高地 +15% 射程 / +10% 伤害</span>');
+  if (t.goldGen) rows.push('<span style="color:#ffc94a">金矿 +' + t.goldGen.toFixed(1) + ' 金/秒</span>');
+  if (t.totemAura) {
+    rows.push('<span style="color:#c084fc">图腾塔光环 射速 +' +
+      Math.round((t.totemBonus || 0.22) * 100) + '%</span>');
+  }
+  if (t.invulnT > 0) {
+    rows.push('<span style="color:#7fe3ff">圣域护盾：无敌 ' + t.invulnT.toFixed(1) + ' 秒</span>');
+  }
   rows.push('总伤害 <span>' + Math.round(t.dmgDealt) + '</span>');
   document.getElementById('pRows').innerHTML = rows.join('<br>');
 
@@ -7124,6 +7513,19 @@ function openBasePanel() {
   });
 }
 
+const btnAutoBuild = document.getElementById('btnAutoBuild');
+if (btnAutoBuild) btnAutoBuild.onclick = () => {
+  autoBuild = !autoBuild;
+  btnAutoBuild.classList.toggle('on', autoBuild);
+  toast(autoBuild ? '自动建造：开启' : '自动建造：关闭');
+};
+const btnAutoSkill = document.getElementById('btnAutoSkill');
+if (btnAutoSkill) btnAutoSkill.onclick = () => {
+  autoSkill = !autoSkill;
+  btnAutoSkill.classList.toggle('on', autoSkill);
+  toast(autoSkill ? '自动技能：开启' : '自动技能：关闭');
+};
+
 const btnBgm = document.getElementById('btnBgm');
 if (btnBgm) btnBgm.onclick = () => toggleBgm();
 
@@ -7223,8 +7625,8 @@ window.addEventListener('pointerdown', () => {
   window.addEventListener('mouseup', () => { drag = null; });
 })();
 
-const btnAllSkill = document.getElementById('btnAllSkill');
-btnAllSkill.onclick = () => {
+const btnAllSkill = null;
+function _allSkillDisabled() {
   if (S.gold < 100) { toast('金币不足 100'); sfx('sell'); return; }
   S.gold -= 100;
   let cntS = 0;
@@ -7246,7 +7648,10 @@ btnAllSkill.onclick = () => {
 };
 
 const btnLevel = document.getElementById('btnLevel');
-btnLevel.onclick = () => restart(S.level % 3 + 1);
+btnLevel.onclick = () => {
+  const next = S.level % 3 + 1;
+  showConfirm('切换关卡', '将进入第 ' + next + ' 关，当前进度会丢失', '确认切换', () => restart(next));
+};
 
 btnSpeed.onclick = () => {
   S.speed = S.speed >= 5 ? 1 : S.speed + 1;
@@ -7261,7 +7666,8 @@ btnPause.onclick = () => {
 
 /* 怪物图鉴 */
 const bestiaryEl = document.getElementById('bestiary');
-document.getElementById('btnBestiary').onclick = e => {
+const _btBestiary = document.getElementById('btnBestiary');
+if (_btBestiary) _btBestiary.onclick = e => {
   bestiaryEl.classList.toggle('on');
   e.target.classList.toggle('on', bestiaryEl.classList.contains('on'));
 };
@@ -7587,6 +7993,13 @@ function sfx(kind) {
     case 'wind':
       noiseHit(0.055, 0.42, 500, 2600, 'bandpass');
       break;
+    case 'bomb':
+      beep(1500, 0.09, 'sine', 0.045, 420);        // 投弹下滑音
+      setTimeout(() => {
+        noiseHit(0.05, 0.22, 900, 120, 'lowpass');  // 低频爆震
+        beep(90, 0.18, 'sine', 0.05, 40);
+      }, 90);
+      break;
     case 'teleport':
       beep(1200, 0.10, 'sine', 0.05, 2400);
       beep(600, 0.16, 'triangle', 0.04, 180);
@@ -7619,8 +8032,8 @@ function buildPalette() {
     pal.appendChild(el);
   });
 
-  // 地刺（特殊：只能铺在路面上）
-  {
+  // 地刺已移除（保留代码结构）
+  if (false) {
     const el = document.createElement('div');
     el.className = 'tw';
     el.dataset.key = 'spike';
@@ -7776,6 +8189,29 @@ function drawIcon(cc, def) {
   g.textBaseline = 'middle';
   g.fillText(def.name, 40, 69);
   g.restore();
+}
+
+function showConfirm(title, text, okLabel, onOk) {
+  const old = document.getElementById('cfm');
+  if (old) old.remove();
+  const d = document.createElement('div');
+  d.id = 'cfm';
+  d.style.cssText = 'position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;' +
+    'background:rgba(4,6,11,.78);-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)';
+  d.innerHTML =
+    '<div style="background:#0e131a;border:1px solid rgba(110,168,255,.32);border-radius:14px;' +
+    'padding:22px 26px;text-align:center;max-width:340px;width:calc(100% - 40px)">' +
+    '<div style="font-size:17px;font-weight:800;color:#cfe0ff;margin-bottom:8px">' + title + '</div>' +
+    '<div style="font-size:12.5px;color:#7f8da0;line-height:1.6;margin-bottom:18px">' + text + '</div>' +
+    '<div style="display:flex;gap:9px">' +
+    '<button id="cfmNo" style="flex:1;padding:9px 12px;border-radius:9px;cursor:pointer;border:1px solid rgba(255,255,255,.14);' +
+    'background:rgba(255,255,255,.05);color:#c3d3e6;font-size:13px;font-weight:600;font-family:inherit">取消</button>' +
+    '<button id="cfmYes" style="flex:1;padding:9px 12px;border-radius:9px;cursor:pointer;border:1px solid rgba(110,168,255,.55);' +
+    'background:rgba(110,168,255,.2);color:#cfe0ff;font-size:13px;font-weight:700;font-family:inherit">' + okLabel + '</button>' +
+    '</div></div>';
+  document.body.appendChild(d);
+  document.getElementById('cfmNo').onclick = () => d.remove();
+  document.getElementById('cfmYes').onclick = () => { d.remove(); onOk(); };
 }
 
 function restart(lv) {
