@@ -845,19 +845,20 @@ const TOWER_AIR = {
 // 主动技能（选中塔后手动释放）
 const TOWER_ACTIVE = {
   gun:    { name: '弹幕时刻', cd: 26, dur: 8, desc: '8 秒内射速 ×3' },
-  cannon: { name: '地毯轰炸', cd: 30, desc: '射程内所有敌人受 3 倍伤害' },
+  cannon: { name: '地毯轰炸', cd: 30, desc: '射程内敌人 3 倍伤害，并沿路径连锁爆炸' },
   frost:  { name: '冰封领域', cd: 34, dur: 4, desc: '范围内敌人减速 75%，持续 4 秒' },
   sniper: { name: '死亡标记', cd: 28, desc: '射程内最强敌人受伤 +80%，持续 6 秒' },
   flame:  { name: '烈焰风暴', cd: 30, dur: 6, desc: '射程内持续燃烧，每秒 70 伤害' },
-  tesla:  { name: '雷暴', cd: 34, desc: '对全场每个敌人放电 90 伤害' },
-  aa:     { name: '弹幕拦截', cd: 24, dur: 3, desc: '全场空中敌人眩晕 3 秒' },
+  tesla:  { name: '连锁风暴', cd: 30, desc: '链接周围炮塔，一起释放超级闪电' },
+  aa:     { name: '分裂弹幕', cd: 26, desc: '对空中目标连射分裂弹，命中后炸成 8 片' },
   wind: { name: '飓风', cd: 28, dur: 6, desc: '全场飞行单位倒退 4 秒' },
   holy: { name: '圣域', cd: 26, dur: 5, desc: '范围内其他炮塔 5 秒无敌' },
   barracks: { name: '增援', cd: 30, dur: 6, desc: '立刻补齐所有士兵，6 秒内伤害 +60%' },
   poison: { name: '毒雾爆发', cd: 30, desc: '射程内敌人立刻中剧毒' },
   magnet: { name: '引力坍缩', cd: 34, desc: '把地面敌人往回推' },
   holy:   { name: '圣疗', cd: 30, desc: '全场士兵回满血' },
-  missile:{ name: '饱和打击', cd: 34, desc: '对射程内所有敌人各来一发' },
+  missile:{ name: '饱和打击', cd: 34, desc: '射程内敌人各挨一发，并呼叫空袭' },
+  railgun:{ name: '三叉戟', cd: 32, desc: '向前方射出三道穿透光束' },
   totem:  { name: '战鼓', cd: 40, dur: 8, desc: '8 秒内全场炮塔射速再提升' },
 };
 
@@ -2066,6 +2067,7 @@ function towerStatsRaw(t) {
     if (s0.burn) s0.burn *= lp0;
     if (s0.dps) s0.dps *= lp0;
     if (s0.range) s0.range *= (1 + (lp0 - 1) * 0.25) * 0.85;   // 含全局 -15%
+    if (t.totemBuffT > 0 && s0.rate) s0.rate *= 0.72;          // 图腾战鼓（低级塔也生效）
     return s0;
   }
   const br = def.evolve[t.branch];
@@ -2142,6 +2144,8 @@ function towerStatsRaw(t) {
     if (s.range) s.range *= 1.10;
   }
 
+  // 图腾战鼓
+  if (t.totemBuffT > 0 && s.rate) s.rate *= 0.72;
   // 全场狂怒药水
   if (S && S.rageT > 0 && s.rate) s.rate *= 0.5;
   if (s.range) s.range *= 0.85;   // 全局射程 -15%
@@ -2549,7 +2553,6 @@ function fireTower(t, dt) {
     if (t.zoneCd <= 0) {
       const stz = towerStats(t);
       if (t.type === 'frost') { t.zoneCd = 9; spawnZoneOnPath('ice', t); sfx('frost'); }
-      else if (t.type === 'magnet') { t.zoneCd = 9; spawnZoneOnPath('storm', t); }
       else t.zoneCd = 1;
     }
   }
@@ -2712,7 +2715,7 @@ function fireTower(t, dt) {
     mark: st.mark || 0,
     push: st.push || 0,
     dis: st.dis || 0,
-    chainBlast: (t.type === 'cannon' && t.level >= 4) ? 4 : 0,
+    chainBlast: 0,   // 连锁炸改为主动技能触发
     crit: st.crit || 0,
     bonusSlowed: st.bonusSlowed || 0,
     cluster: st.cluster ? Math.round(st.cluster) : 0,
@@ -3065,6 +3068,13 @@ function attackObstacle(t, st, only) {
 /* ══════════════════════════════════════════════════════════════
    主动技能
    ══════════════════════════════════════════════════════════════ */
+// 主动技能可用次数：Lv1=3、Lv2=6、Lv3=9、Lv4=无限
+function activeTotal(t) { return t.level >= 4 ? Infinity : 3 * t.level; }
+function activeLeft(t) {
+  const total = activeTotal(t);
+  return total === Infinity ? Infinity : Math.max(0, total - (t.activeUsed || 0));
+}
+
 function useActive(t) {
   const act = TOWER_ACTIVE[t.type];
   if (!act) return;
@@ -3098,13 +3108,36 @@ function useActive(t) {
     case 'gun':
       t.activeT = act.dur;
       break;
-    case 'cannon':
+    case 'cannon': {
       for (const e of S.enemies) {
         if (e.dead || !canTarget(t, e)) continue;
         if (dist(cx, cy, e.x, e.y) <= st.range) damageEnemy(e, st.dmg * 3, t);
       }
+      // 连锁轰炸：以射程内最靠前的敌人为起点，沿路径连炸 4 段
+      let tgt = null;
+      for (const e of S.enemies) {
+        if (e.dead || e.flying || !canTarget(t, e)) continue;
+        if (dist(cx, cy, e.x, e.y) > st.range) continue;
+        if (!tgt || e.t > tgt.t) tgt = e;
+      }
+      if (tgt) {
+        const route = S.routes[tgt.route || 0];
+        const maxR = Math.max(6, st.range * 1.8);
+        for (let k = 1; k <= 4; k++) {
+          const tt = Math.min(route.length - 1.01, tgt.t + k * 1.5);
+          const pp = pathPos(tt, tgt.route || 0);
+          if (dist(cx, cy, pp.x, pp.y) > maxR) break;
+          addFx(pp.x, pp.y, 'boom', 0.5 + k * 0.05);
+          for (const o of S.enemies) {
+            if (o.dead) continue;
+            if (dist(pp.x, pp.y, o.x, o.y) <= 1.7) damageEnemy(o, st.dmg * 0.7, t);
+          }
+        }
+        shake(0.3);
+      }
       addFx(cx, cy, 'boom', 0.6);
       break;
+    }
     case 'frost': {
       const fr = Math.max(3.5, st.range * 1.6);
       let hitF = 0;
@@ -3122,6 +3155,80 @@ function useActive(t) {
         addFx(cx + Math.cos(a) * fr * 0.8, cy + Math.sin(a) * fr * 0.8, 'chip', 0.5);
       }
       toast('冰封领域：' + hitF + ' 只敌人减速');
+      break;
+    }
+    case 'railgun': {
+      const len = Math.max(9, st.range * 1.6);
+      const spread = 0.30;                       // 三叉角度
+      const angs = [-spread, 0, spread];
+      let hitR = 0;
+      for (const off of angs) {
+        const a = t.angle + off;
+        const ex = cx + Math.cos(a) * len;
+        const ey = cy + Math.sin(a) * len;
+        S.fx.push({ type: 'beam', x: cx, y: cy, x2: ex, y2: ey, life: 0.28, max: 0.28 });
+        // 线段命中判定（穿透）
+        const dx = ex - cx, dy = ey - cy;
+        const len2 = dx * dx + dy * dy || 1;
+        for (const e of S.enemies) {
+          if (e.dead) continue;
+          const tt2 = clamp(((e.x - cx) * dx + (e.y - cy) * dy) / len2, 0, 1);
+          const px = cx + dx * tt2, py = cy + dy * tt2;
+          if (dist(e.x, e.y, px, py) <= 0.95) {
+            damageEnemy(e, st.dmg * 2.4, t);
+            addFx(e.x, e.y, 'boom', 0.4);
+            hitR++;
+          }
+        }
+      }
+      shake(0.35);
+      flashScreen('#38bdf8', 0.18);
+      toast('三叉戟：三道穿透光束 · 命中 ' + hitR + ' 次');
+      break;
+    }
+    case 'missile': {
+      // ① 饱和打击：射程内每个敌人都吃一发
+      let nM = 0;
+      for (const e of S.enemies.slice()) {
+        if (e.dead || !canTarget(t, e)) continue;
+        if (dist(cx, cy, e.x, e.y) > st.range) continue;
+        damageEnemy(e, st.dmg * 1.2, t);
+        addFx(e.x, e.y, 'boom', 0.45);
+        nM++;
+      }
+      // ② 空袭：以射程内某个敌人（或塔本身）为中心，落 8 枚炸弹
+      let ax = cx, ay = cy;
+      const pool = S.enemies.filter(e => !e.dead && dist(cx, cy, e.x, e.y) <= st.range);
+      if (pool.length) {
+        const pick = pool[(Math.random() * pool.length) | 0];
+        ax = pick.x; ay = pick.y;
+      }
+      for (let i = 0; i < 8; i++) {
+        const px = ax + rnd(-2.6, 2.6), py = ay + rnd(-2.6, 2.6);
+        addFx(px, py, 'bombwave', 0.9);
+        for (const e of S.enemies) {
+          if (e.dead) continue;
+          if (dist(px, py, e.x, e.y) <= 2.2) damageEnemy(e, 240, t);
+        }
+      }
+      shake(0.4);
+      flashScreen('#ffb36b', 0.18);
+      toast('饱和打击 + 空袭：直接命中 ' + nM + ' 只');
+      break;
+    }
+    case 'magnet': {
+      const z2 = spawnZoneOnPath('storm', t);
+      if (!z2) placeZone('storm', cx + rnd(-2, 2), cy + rnd(-2, 2));
+      let nk = 0;
+      for (const e of S.enemies) {
+        if (e.dead || e.flying) continue;
+        if (dist(cx, cy, e.x, e.y) > Math.max(6, st.range * 2)) continue;
+        e.t = Math.max(0, e.t - 2.6);   // 往回推
+        e.slowT = Math.max(e.slowT || 0, 1.5);
+        nk++;
+      }
+      addFx(cx, cy, 'boom', 0.9);
+      toast('引力坍缩：雷暴云降临，推回 ' + nk + ' 只敌人');
       break;
     }
     case 'wind': {
@@ -3151,16 +3258,83 @@ function useActive(t) {
       }
       break;
     }
-    case 'flame':
+    case 'flame': {
       t.activeT = act.dur;
-      break;
-    case 'tesla':
+      const fr2 = st.range * 1.25;
+      let nf2 = 0;
       for (const e of S.enemies) {
         if (e.dead) continue;
-        damageEnemy(e, 90, t);
+        if (dist(cx, cy, e.x, e.y) > fr2) continue;
+        e.burnT = Math.max(e.burnT || 0, act.dur);
+        e.burnDps = Math.max(e.burnDps || 0, 70);
+        nf2++;
       }
-      addFx(cx, cy, 'boom', 0.8);
+      // 火花四溅
+      for (let i = 0; i < 26; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = rnd(1.2, 3.8);
+        S.fx.push({ type: 'spark', x: cx, y: cy,
+          vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1.2,
+          life: rnd(0.45, 0.95), max: 0.95 });
+      }
+      shake(0.2);
+      toast('烈焰风暴：点燃 ' + nf2 + ' 只敌人');
       break;
+    }
+    case 'poison': {
+      const pr2 = st.range * 1.2;
+      let np2 = 0;
+      for (const e of S.enemies) {
+        if (e.dead) continue;
+        if (dist(cx, cy, e.x, e.y) > pr2) continue;
+        e.burnT = Math.max(e.burnT || 0, 6);
+        e.burnDps = Math.max(e.burnDps || 0, 48);
+        // 中毒骷髅从敌人头顶冒起
+        S.fx.push({ type: 'skull', x: e.x, y: e.y - 0.4, life: 1.3, max: 1.3 });
+        np2++;
+      }
+      // 毒雾圈
+      for (let i = 0; i < 10; i++) {
+        const a = i / 10 * Math.PI * 2;
+        addFx(cx + Math.cos(a) * pr2 * 0.6, cy + Math.sin(a) * pr2 * 0.6, 'fog', 1.2);
+      }
+      toast('毒雾爆发：' + np2 + ' 只敌人中毒');
+      break;
+    }
+    case 'tesla': {
+      const LINK_R = 5.5;          // 链接半径（格）
+      const HIT_R = 3.4;           // 每座联动塔的打击半径
+      const partners = [];
+      for (const o of S.towers) {
+        if (o === t || o.type === 'totem') continue;
+        if (dist(cx, cy, o.x + 0.5, o.y + 0.5) > LINK_R) continue;
+        partners.push(o);
+      }
+      const nodes = [t].concat(partners);
+      // 塔与塔之间的联动闪电
+      for (const o of partners) {
+        S.fx.push({ type: 'chain', pts: [{ x: cx, y: cy }, { x: o.x + 0.5, y: o.y + 0.5 }], life: 0.35, max: 0.35 });
+        addFx(o.x + 0.5, o.y + 0.5, 'boom', 0.45);
+        o.litHoly = 0.3;
+      }
+      const dmg = 110 + partners.length * 45;   // 联动越多越强
+      let hitN = 0;
+      for (const e of S.enemies) {
+        if (e.dead) continue;
+        let src = null;
+        for (const nd of nodes) {
+          if (dist(nd.x + 0.5, nd.y + 0.5, e.x, e.y) <= HIT_R) { src = nd; break; }
+        }
+        if (!src) continue;
+        S.fx.push({ type: 'chain', pts: [{ x: src.x + 0.5, y: src.y + 0.5 }, { x: e.x, y: e.y }], life: 0.22, max: 0.22 });
+        damageEnemy(e, dmg, t);
+        hitN++;
+      }
+      shake(0.45);
+      flashScreen('#bfe9ff', 0.22);
+      toast('超级闪电：' + nodes.length + ' 座塔联动 · 命中 ' + hitN + ' 只');
+      break;
+    }
     case 'barracks':
       t.activeT = act.dur;
       for (const sd of S.soldiers) {
@@ -3170,16 +3344,57 @@ function useActive(t) {
     case 'holy':
       for (const sd of S.soldiers) if (!sd.dead) sd.hp = towerStats(sd.tower).hp;
       break;
-    case 'totem':
+    case 'totem': {
       t.activeT = act.dur;
-      break;
-    case 'aa':
-      for (const e of S.enemies) {
-        if (e.dead || !e.flying) continue;
-        stunEnemy(e, act.dur);
+      t.totemBuffT = act.dur;
+      const tbR = 5.2;
+      let nb = 0;
+      // 图腾柱视觉：塔自身 + 每个被加成的塔
+      S.fx.push({ type: 'rune', x: cx, y: cy, life: act.dur, max: act.dur });
+      for (const o of S.towers) {
+        if (o === t) continue;
+        if (dist(cx, cy, o.x + 0.5, o.y + 0.5) > tbR) continue;
+        o.totemBuffT = Math.max(o.totemBuffT || 0, act.dur);
+        S.fx.push({ type: 'rune', x: o.x + 0.5, y: o.y + 0.5, life: act.dur, max: act.dur });
+        nb++;
       }
-      addFx(cx, cy, 'boom', 0.7);
+      shake(0.25);
+      toast('图腾战鼓：' + (nb + 1) + ' 座塔射速 +28%（' + act.dur + ' 秒）');
       break;
+    }
+    case 'aa': {
+      const airs = S.enemies.filter(e => !e.dead && (e.flying || e.ufo));
+      const shots = Math.min(8, Math.max(4, airs.length));
+      let hits = 0;
+      for (let i = 0; i < shots; i++) {
+        const tgt = airs.length ? airs[(Math.random() * airs.length) | 0] : null;
+        const tx = tgt ? tgt.x : cx + rnd(-3, 3);
+        const ty = tgt ? tgt.y : cy + rnd(-3, 3);
+        // 主弹曳光
+        S.fx.push({ type: 'beam', x: cx, y: cy, x2: tx, y2: ty, life: 0.16, max: 0.16 });
+        // 主弹命中
+        for (const e of S.enemies) {
+          if (e.dead) continue;
+          if (dist(tx, ty, e.x, e.y) <= 1.5) { damageEnemy(e, st.dmg * 1.2, t); hits++; }
+        }
+        // 分裂成 8 片破片
+        addFx(tx, ty, 'boom', 0.6);
+        for (let k = 0; k < 8; k++) {
+          const a = k / 8 * Math.PI * 2 + Math.random() * 0.6;
+          const fx2 = tx + Math.cos(a) * 1.15;
+          const fy2 = ty + Math.sin(a) * 1.15;
+          addFx(fx2, fy2, 'chip', 0.5);
+          for (const e of S.enemies) {
+            if (e.dead) continue;
+            if (dist(fx2, fy2, e.x, e.y) <= 0.9) { damageEnemy(e, st.dmg * 0.55, t); hits++; }
+          }
+        }
+      }
+      shake(0.32);
+      flashScreen('#ffd27a', 0.15);
+      toast('分裂弹幕：' + shots + ' 发 · ' + hits + ' 次命中');
+      break;
+    }
   }
   sfx('upgrade');
   if (S.selected === t) renderPanel();
@@ -3457,15 +3672,29 @@ function sealTower(t) {
 }
 
 function spawnZoneOnPath(kind, t) {
-  let best = null, bt = -1;
   const st = towerStats(t);
+  const cx = t.x + 0.5, cy = t.y + 0.5;
+  // 只在炮塔射程内找目标，绝不在范围外生成
+  let best = null, bt = -1;
   for (const e of S.enemies) {
     if (e.dead || e.flying || e.ufo) continue;
-    if (dist(t.x + 0.5, t.y + 0.5, e.x, e.y) > st.range + 3.5) continue;
+    if (dist(cx, cy, e.x, e.y) > st.range) continue;
     if (e.t > bt) { bt = e.t; best = e; }
   }
-  const pos = best ? { x: best.x, y: best.y } : pathPos(S.routes[0].length * 0.4, 0);
-  placeZone(kind, pos.x, pos.y);
+  let px, py;
+  if (best) {
+    px = best.x; py = best.y;
+  } else {
+    // 范围内没有敌人：放在射程内离炮塔最近的路面格
+    let bd = 1e9, bc = null;
+    for (const cell of S.path) {
+      const d = dist(cx, cy, cell.x + 0.5, cell.y + 0.5);
+      if (d <= st.range && d < bd) { bd = d; bc = cell; }
+    }
+    if (!bc) return null;    // 射程内没有路，就不放
+    px = bc.x + 0.5; py = bc.y + 0.5;
+  }
+  return placeZone(kind, px, py);
 }
 
 function spawnTornado(t) {
@@ -3476,9 +3705,9 @@ function spawnTornado(t) {
 function placeZone(kind, wx, wy) {
   const z = {
     kind: kind, x: wx, y: wy,
-    r: kind === 'tornado' ? 2.6 : 1.5,
-    life: kind === 'tornado' ? 7 : 5,
-    max: kind === 'tornado' ? 7 : 5,
+    r: kind === 'tornado' ? 2.6 : (kind === 'storm' ? 2.4 : 1.5),
+    life: kind === 'tornado' ? 7 : (kind === 'storm' ? 10 : 5),
+    max: kind === 'tornado' ? 7 : (kind === 'storm' ? 10 : 5),
     hp: kind === 'ice' ? 420 + S.wave * 30 : 0,
     maxHp: kind === 'ice' ? 420 + S.wave * 30 : 0,
     vx: 0, vy: 0,
@@ -4357,7 +4586,10 @@ function shake(v) {
 /* ══════════════════════════════════════════════════════════════
    特效
    ══════════════════════════════════════════════════════════════ */
+const FX_CAP = 420;
 function addFx(x, y, type, life, text) {
+  // 特效上限：超出时丢弃最旧的，避免后期粒子爆炸拖慢帧率
+  if (S.fx.length >= FX_CAP) S.fx.shift();
   S.fx.push({ x, y, type, life, max: life, text });
 }
 
@@ -4780,6 +5012,7 @@ function update(dt) {
 
   for (const t of S.towers) {
     if (t.invulnT > 0) t.invulnT -= dt;
+    if (t.totemBuffT > 0) t.totemBuffT -= dt;
     if (t.litHoly > 0) t.litHoly -= dt;
     if (t.litTotem > 0) t.litTotem -= dt;
   }
@@ -6390,39 +6623,63 @@ function drawZone(zn, z) {
     ctx.fillRect(q[0] - R * 0.6, q[1] - R * 1.15, R * 1.2 * hpR, Math.max(3, z * 0.07));
     ctx.restore();
   } else if (zn.kind === 'storm') {
-    // 磁暴雨云
+    // 雷暴云：范围环 + 云体 + 分叉闪电
     ctx.save();
-    ctx.globalAlpha = 0.85 * k;
-    const cg = ctx.createRadialGradient(q[0], q[1] - R * 0.3, R * 0.2, q[0], q[1], R * 1.1);
-    cg.addColorStop(0, 'rgba(90,110,140,.85)');
-    cg.addColorStop(1, 'rgba(40,55,80,.25)');
-    ctx.fillStyle = cg;
-    ctx.beginPath(); ctx.ellipse(q[0], q[1] - R * 0.25, R * 0.95, R * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-    // 雨
-    ctx.strokeStyle = 'rgba(150,200,255,.55)';
-    ctx.lineWidth = Math.max(1, z * 0.035);
-    for (let i = 0; i < 12; i++) {
-      const rx = q[0] + ((i * 37) % 100 - 50) / 50 * R * 0.8;
-      const ry = q[1] + ((S.time * 260 + i * 41) % (R * 1.6)) - R * 0.2;
-      ctx.beginPath();
-      ctx.moveTo(rx, ry);
-      ctx.lineTo(rx - R * 0.05, ry + R * 0.22);
-      ctx.stroke();
+    // 作用范围环（精确标出半径）
+    ctx.globalAlpha = 0.6 * k;
+    ctx.strokeStyle = 'rgba(120,220,255,.9)';
+    ctx.lineWidth = Math.max(1.5, z * 0.06);
+    ctx.setLineDash([z * 0.18, z * 0.14]);
+    ctx.beginPath(); ctx.arc(q[0], q[1], R, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    // 内部电场
+    const fg2 = ctx.createRadialGradient(q[0], q[1], R * 0.1, q[0], q[1], R);
+    fg2.addColorStop(0, 'rgba(120,200,255,' + (0.20 * k) + ')');
+    fg2.addColorStop(1, 'rgba(80,120,200,0)');
+    ctx.fillStyle = fg2;
+    ctx.beginPath(); ctx.arc(q[0], q[1], R, 0, Math.PI * 2); ctx.fill();
+
+    // 云体
+    ctx.globalAlpha = 0.9 * k;
+    for (let ci = 0; ci < 3; ci++) {
+      const ox = (ci - 1) * R * 0.4;
+      const rr = R * (0.55 - Math.abs(ci - 1) * 0.12);
+      const cg = ctx.createRadialGradient(q[0] + ox, q[1] - R * 0.35, rr * 0.2, q[0] + ox, q[1] - R * 0.35, rr);
+      cg.addColorStop(0, 'rgba(60,80,120,.95)');
+      cg.addColorStop(1, 'rgba(30,45,75,.15)');
+      ctx.fillStyle = cg;
+      ctx.beginPath(); ctx.ellipse(q[0] + ox, q[1] - R * 0.35, rr, rr * 0.62, 0, 0, Math.PI * 2); ctx.fill();
     }
+
     // 闪电
-    if (Math.sin(S.time * 7) > 0.85) {
-      ctx.strokeStyle = 'rgba(180,230,255,.95)';
-      ctx.lineWidth = Math.max(1.5, z * 0.06);
-      ctx.beginPath();
-      let lx = q[0] + rnd(-R * 0.5, R * 0.5), ly = q[1] - R * 0.15;
-      ctx.moveTo(lx, ly);
-      for (let i = 0; i < 4; i++) {
-        lx += rnd(-R * 0.2, R * 0.2);
-        ly += R * 0.22;
+    ctx.globalAlpha = k;
+    const bolts = 2 + (Math.sin(S.time * 9) > 0 ? 1 : 0);
+    for (let b = 0; b < bolts; b++) {
+      const seed = Math.floor(S.time * 12) + b * 7;
+      let lx = q[0] + (((seed * 37) % 100 - 50) / 50) * R * 0.7;
+      let ly = q[1] - R * 0.45;
+      ctx.strokeStyle = 'rgba(190,240,255,.95)';
+      ctx.lineWidth = Math.max(1.6, z * 0.07);
+      ctx.beginPath(); ctx.moveTo(lx, ly);
+      for (let i = 0; i < 5; i++) {
+        lx += (((seed + i * 13) % 21) - 10) / 10 * R * 0.22;
+        ly += R * 0.26;
         ctx.lineTo(lx, ly);
       }
       ctx.stroke();
+      ctx.lineWidth = Math.max(1, z * 0.04);
+      ctx.strokeStyle = 'rgba(150,220,255,.8)';
+      ctx.beginPath();
+      ctx.moveTo(lx, ly - R * 0.2);
+      ctx.lineTo(lx + R * 0.2, ly + R * 0.15);
+      ctx.stroke();
     }
+    // 环形电弧
+    ctx.strokeStyle = 'rgba(140,225,255,' + (0.5 * k) + ')';
+    ctx.lineWidth = Math.max(1, z * 0.05);
+    const a0 = S.time * 3;
+    ctx.beginPath(); ctx.arc(q[0], q[1], R * 0.85, a0, a0 + 1.2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(q[0], q[1], R * 0.85, a0 + Math.PI, a0 + Math.PI + 1.2); ctx.stroke();
     ctx.restore();
   } else if (zn.kind === 'tornado') {
     // 龙卷风
@@ -7544,6 +7801,94 @@ function drawFx(f) {
     ctx.arc(sx, sy, cam.z * (0.3 + (1 - k) * 1.3), 0, Math.PI * 2);
     ctx.stroke();
 
+  } else if (f.type === 'spark') {
+    const el = f.max - f.life;                 // 已存在时间
+    const px = sx + (f.vx || 0) * el * cam.z * 0.5;
+    const py = sy + (f.vy || 0) * el * cam.z * 0.5 + 2.6 * el * el * cam.z * 0.5;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = k;
+    ctx.fillStyle = 'rgba(255,210,120,.95)';
+    ctx.beginPath(); ctx.arc(px, py, Math.max(1.2, cam.z * 0.05), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,220,' + (k * 0.9) + ')';
+    ctx.beginPath(); ctx.arc(px, py, Math.max(0.8, cam.z * 0.025), 0, Math.PI * 2); ctx.fill();
+    // 拖尾
+    ctx.strokeStyle = 'rgba(255,150,60,' + (k * 0.5) + ')';
+    ctx.lineWidth = Math.max(1, cam.z * 0.03);
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px - (f.vx || 0) * 0.08 * cam.z, py - (f.vy || 0) * 0.08 * cam.z);
+    ctx.stroke();
+    ctx.restore();
+  } else if (f.type === 'skull') {
+    const el = f.max - f.life;
+    const py = sy - el * cam.z * 0.55;          // 缓缓上升
+    const sz = cam.z * 0.22 * (0.6 + el * 0.8);
+    ctx.save();
+    ctx.globalAlpha = k * 0.95;
+    // 骷髅头
+    ctx.fillStyle = 'rgba(180,255,120,.95)';
+    ctx.beginPath(); ctx.arc(sx, py, sz, 0, Math.PI * 2); ctx.fill();
+    // 下颚
+    ctx.fillRect(sx - sz * 0.45, py + sz * 0.55, sz * 0.9, sz * 0.5);
+    // 眼窝
+    ctx.fillStyle = 'rgba(20,40,10,.95)';
+    ctx.beginPath(); ctx.arc(sx - sz * 0.35, py - sz * 0.15, sz * 0.26, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx + sz * 0.35, py - sz * 0.15, sz * 0.26, 0, Math.PI * 2); ctx.fill();
+    // 牙缝
+    ctx.strokeStyle = 'rgba(20,40,10,.9)';
+    ctx.lineWidth = Math.max(1, cam.z * 0.02);
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx + i * sz * 0.25, py + sz * 0.55);
+      ctx.lineTo(sx + i * sz * 0.25, py + sz * 1.0);
+      ctx.stroke();
+    }
+    // 绿色毒气光晕
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(110,220,80,' + (k * 0.22) + ')';
+    ctx.beginPath(); ctx.arc(sx, py, sz * 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (f.type === 'rune') {
+    const rr = cam.z * 0.85;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // 图腾柱
+    ctx.fillStyle = 'rgba(255,200,90,' + (0.75 * k) + ')';
+    ctx.fillRect(sx - cam.z * 0.10, sy - rr * 1.7, cam.z * 0.20, rr * 1.7);
+    // 柱顶横木
+    ctx.fillRect(sx - cam.z * 0.26, sy - rr * 1.55, cam.z * 0.52, cam.z * 0.10);
+    // 光环
+    ctx.strokeStyle = 'rgba(255,190,70,' + (0.55 * k) + ')';
+    ctx.lineWidth = Math.max(1.5, cam.z * 0.05);
+    ctx.beginPath(); ctx.arc(sx, sy, rr * (0.9 + 0.06 * Math.sin(S.time * 6)), 0, Math.PI * 2); ctx.stroke();
+    // 旋转符文
+    ctx.fillStyle = 'rgba(255,235,160,' + (0.85 * k) + ')';
+    for (let i = 0; i < 6; i++) {
+      const a = S.time * 1.6 + i * Math.PI / 3;
+      ctx.beginPath();
+      ctx.arc(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr * 0.5, cam.z * 0.055, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  } else if (f.type === 'beam') {
+    const [ax, ay] = w2s(f.x, f.y);
+    const [bx2, by2] = w2s(f.x2, f.y2);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // 外层辉光
+    ctx.strokeStyle = 'rgba(120,210,255,' + (k * 0.55) + ')';
+    ctx.lineWidth = Math.max(6, cam.z * 0.30 * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+    // 中层
+    ctx.strokeStyle = 'rgba(190,240,255,' + (k * 0.85) + ')';
+    ctx.lineWidth = Math.max(3, cam.z * 0.14 * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+    // 核心白线
+    ctx.strokeStyle = 'rgba(255,255,255,' + k + ')';
+    ctx.lineWidth = Math.max(1.5, cam.z * 0.05 * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+    ctx.restore();
   } else if (f.type === 'chain') {
     // 锯齿闪电
     ctx.strokeStyle = 'rgba(255,246,140,' + k + ')';
