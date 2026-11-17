@@ -645,6 +645,7 @@ window.onerror = function (msg, src, line, col, err) {
 const N = 20;
 const GRASS = 0, ROAD = 1, ROCK = 2, BUILT = 3;
 const WAVE_MAX = 30;
+let endlessMode = false;   // 无尽模式开关（顶部声明，供 update 使用）
 const KILL_GOLD_RATE = 0.75;   // 击杀金币系数
 // 越往后击杀收益越低：第 1 波 ×1.00，第 10 波 ×0.82，第 20 波 ×0.68，第 30 波 ×0.58
 function killGoldDecay() {
@@ -1482,7 +1483,6 @@ function newState(keepSeed, level) {
     nextT: 8,
     speed: 1,
     q: 2,             // 画质档位：2 高 / 1 中 / 0 低
-    fast10Left: 60,   // 10 倍速剩余可用秒数
     paused: false,
     over: false,
     won: false,
@@ -2990,31 +2990,84 @@ function findBuildSpot() {
 
 const AUTO_TYPES = ['gun', 'cannon', 'frost', 'sniper', 'aa', 'tesla', 'poison', 'wind', 'holy', 'missile'];
 
+// 下一级升级费用（不购买，只查询）
+function autoNextCost(t) {
+  const def = TOWER_DEF[t.type];
+  if (!def) return Infinity;
+  if (t.level === 1) return costOf(def.lv[1].cost);
+  if (t.level === 2) return costOf(def.evolve[0].cost);
+  if (t.level === 3) return costOf(def.evolve[t.branch || 0].l4.cost);
+  return Infinity;
+}
+
+// 自动建造策略：先保证最低塔数 → 攒钱升级 → 有余钱才补新塔（且类型多样化）
 function autoTowerTick(dt) {
   if (!autoBuild) return;
   autoBuildT -= dt;
   if (autoBuildT > 0) return;
   autoBuildT = 0.8;
 
-  const cap = 200;                              // 上限 200 座
-  const upg = S.towers.filter(t => t.level < 4)
-    .sort((a, b) => (a.totalCost || 0) - (b.totalCost || 0))[0];
+  const cap = 200;
+  const count = S.towers.length;
+  const minTowers = Math.min(14, 4 + Math.floor(S.wave * 0.55));  // 保底塔数（更少、更强）
+  // 现金储备：塔越多越要攒钱升级
+  const reserve = count < 6 ? 60 : (count < 12 ? 90 : (count < 20 ? 130 : 180));
+  const spendable = S.gold - reserve;
+  const firstCost = costOf(TOWER_DEF.gun.lv[0].cost);
 
-  // 金币充裕时优先提升质量
-  if (upg && S.gold > 2600 && Math.random() < 0.45) {
-    if (tryUpgradeAuto(upg)) { updateHud(); return; }
-  }
-
-  if (S.towers.length < cap) {
+  const buildOne = () => {
     const cid = findBuildSpot();
-    if (cid >= 0) {
-      const type = AUTO_TYPES[(Math.random() * AUTO_TYPES.length) | 0];
-      if (buildTower(cid, type)) { updateHud(); return; }
+    if (cid < 0) return false;
+    // 选当前数量最少的类型，避免清一色速射塔
+    const cnt = {};
+    for (const t of S.towers) cnt[t.type] = (cnt[t.type] || 0) + 1;
+    let type = AUTO_TYPES[0], best = 1e9;
+    for (const ty of AUTO_TYPES) {
+      const c = cnt[ty] || 0;
+      if (c < best) { best = c; type = ty; }
+    }
+    return !!buildTower(cid, type);
+  };
+
+  // ⓪ 攒钱升级基地：全局加成最高优先，够钱且到波次就升
+  const bnext = S.baseTier + 1;
+  if (bnext <= 5 && S.wave >= bnext * 5) {
+    const bcost = BASE_COST[bnext - 1];
+    if (count >= minTowers && S.gold >= bcost + 150) {   // 先满足塔数底线，再升基地
+      let bi = 0;
+      for (let i = 0; i < BASE_BRANCH.length; i++) {
+        if (BASE_BRANCH[i].dmg > BASE_BRANCH[bi].dmg) bi = i;   // 选单发最高的分支
+      }
+      buyBaseUpgrade(S.baseTier === 0 ? bi : (S.baseBranch || 0));
+      updateHud();
+      return;
     }
   }
 
-  // 建不了就升级
-  if (upg && tryUpgradeAuto(upg)) updateHud();
+  // ① 保底：塔数不够时先铺塔（不攒钱）
+  if (count < minTowers && S.gold >= firstCost) {
+    if (buildOne()) { updateHud(); return; }
+  }
+
+  // ② 攒钱优先升级现有塔（从最便宜的升起，逐步提高质量）
+  const upgradable = S.towers.filter(t => t.level < 4)
+    .sort((a, b) => autoNextCost(a) - autoNextCost(b));
+  for (const t of upgradable) {
+    const c = autoNextCost(t);
+    if (c <= spendable) {
+      if (tryUpgradeAuto(t)) { updateHud(); return; }
+      break;
+    }
+    if (c <= S.gold && count < minTowers) {   // 塔太少时允许少量透支
+      if (tryUpgradeAuto(t)) { updateHud(); return; }
+      break;
+    }
+  }
+
+  // ③ 现金非常充裕（够 2.4 座新塔 + 储备）才补新塔
+  if (count < cap && S.gold >= firstCost * 2.4 + reserve) {
+    if (buildOne()) { updateHud(); return; }
+  }
 }
 
 function autoSkillTick(dt) {
@@ -3875,9 +3928,9 @@ function updateGiant(e, dt) {
     e.invulnT = Math.max(0, (e.invulnT || 0) - dt);
     e.shieldCd = (e.shieldCd == null ? 10 : e.shieldCd) - dt;
     const hpr2 = e.hp / e.maxHp;
-    if (hpr2 <= 0.5 && e.shieldCd <= 0) {
-      e.shieldCd = 10;
-      e.invulnT = 5;
+    if (hpr2 <= 0.5 && !e.shieldUsed) {
+      e.shieldUsed = true;
+      e.invulnT = 3;
       addFx(e.x, e.y, 'bombwave', 1.1);
       addFx(e.x, e.y, 'tp', 0.9);
       announce('护盾展开｜5 秒无敌', '#7fe3ff');
@@ -4669,14 +4722,6 @@ function addFx(x, y, type, life, text) {
 let lastT = 0;
 
 function update(dt) {
-  if (S.speed === 10) {
-    // update() 每帧会按倍速执行多次，这里要按份数折算，保证 60 秒是真实时间
-    S.fast10Left = Math.max(0, (S.fast10Left || 0) - dt / Math.max(1, S.speed));
-    if (S.fast10Left <= 0) {
-      S.speed = 1;
-      toast('10 倍速时间到，已恢复 1×');
-    }
-  }
   S.stepStamp = (S.stepStamp | 0) + 1;   // 每步失效敌人空间网格
   if (S.paused || S.over) return;
 
@@ -4701,9 +4746,19 @@ function update(dt) {
   S.time += dt;
 
   // 自动开波：上一波清完后倒计时
-  if (!S.waveActive && !S.over) {
-    S.nextT -= dt;
-    if (S.nextT <= 0) startWave();
+  if (!S.waveActive && !S.over && !S.awaitChoice) {
+    const capped = (!endlessMode && S.wave >= WAVE_MAX);
+    if (!capped) {
+      S.nextT -= dt;
+      if (S.nextT <= 0) startWave();
+    }
+  }
+
+  // 第 30 波：场上清空后弹出结算（非无尽模式）
+  if (!endlessMode && S.wave >= WAVE_MAX && !S.won && !S.awaitChoice &&
+      !S.waveActive && !S.spawnQueue.length && !S.enemies.length) {
+    S.awaitChoice = true;
+    showEndChoice();
   }
 
   // 生成
@@ -5031,11 +5086,6 @@ function update(dt) {
       e.dead = true;
       const loss = e.type === 'dragon' ? 12 : e.type === 'boss' ? 8 : e.type === 'tank' ? 3 : 1;
       S.lives -= loss;
-    if (S.speed === 10) {
-      S.speed = 1;
-      toast('基地受损，10 倍速已自动关闭');
-      sfx('leak');
-    }
       S.leaked++;
       S.leakBuf.n++;
       S.leakBuf.hp += loss;
@@ -5165,18 +5215,11 @@ function update(dt) {
       }
     }
     updateHud();
-    if (S.wave >= WAVE_MAX && !S.won && !S.awaitChoice && S.enemies.length === 0) {
-      if (endlessMode) {
-        if (!S.endlessAnnounced) {
-          S.endlessAnnounced = true;
-          announce('无尽模式 · 继续挑战', '#ffcf6b');
-          logEvent('已开启无尽模式，波次持续提升', 'event');
-        }
-        S.won = false;
-      } else {
-        S.awaitChoice = true;
-        showEndChoice();
-      }
+    if (S.wave >= WAVE_MAX && endlessMode && !S.endlessAnnounced) {
+      S.endlessAnnounced = true;
+      S.endlessOn = true;
+      announce('无尽模式 · 继续挑战', '#ffcf6b');
+      logEvent('已开启无尽模式，波次持续提升', 'event');
     }
   }
   updateHud();
@@ -8671,11 +8714,20 @@ if (btnQuality) btnQuality.onclick = () => {
   sfx('upgrade');
 };
 
-let endlessMode = false;
 const btnEndless = document.getElementById('btnEndless');
 if (btnEndless) btnEndless.onclick = () => {
+  // 无尽挑战中：再次点击 = 以当前成绩结算胜利
+  if (S.endlessOn || S.wave > WAVE_MAX) {
+    showConfirm('结束挑战', '以当前成绩（第 ' + S.wave + ' 波）结算并胜利？', '确认结束', () => {
+      S.won = true;
+      S.over = true;
+      gameOver(true);
+    });
+    return;
+  }
   endlessMode = !endlessMode;
   btnEndless.classList.toggle('on', endlessMode);
+  btnEndless.textContent = endlessMode ? '无尽 ✓' : '无尽';
   toast(endlessMode ? '无尽模式：30 波后继续挑战' : '无尽模式：30 波后结算');
   sfx('upgrade');
 };
@@ -8817,14 +8869,10 @@ btnLevel.onclick = () => {
   showConfirm('切换关卡', '将进入第 ' + next + ' 关，当前进度会丢失', '确认切换', () => restart(next));
 };
 
+const SPEED_STEPS = [1, 3, 5, 10];   // 1× → 3× → 5× → 10× → 1×
 btnSpeed.onclick = () => {
-  if (S.speed >= 5) {
-    // 5 → 10（需剩余加速时间）
-    if ((S.fast10Left || 0) > 0) S.speed = 10;
-    else { S.speed = 1; toast('10 倍速已用尽'); }
-  } else {
-    S.speed = S.speed + 1;
-  }
+  const i = SPEED_STEPS.indexOf(S.speed);
+  S.speed = SPEED_STEPS[(i + 1) % SPEED_STEPS.length];
   btnSpeed.textContent = S.speed + '×';
   btnSpeed.classList.toggle('on', S.speed > 1);
 };
@@ -9420,10 +9468,6 @@ function tick(now) {
     const el = document.getElementById('uiFps');
     if (el) el.textContent = f;
     fpsEMA = fpsEMA * 0.75 + f * 0.25;   // 仅用于显示，画质由玩家手动决定
-    if (S && S.speed === 10) {
-      const bs = document.getElementById('btnSpeed');
-      if (bs) bs.textContent = '10× (' + Math.ceil(S.fast10Left || 0) + 's)';
-    }
     _fpsFrames = 0; _fpsAcc = 0;
   }
   let dt = (now - lastT) / 1000;
