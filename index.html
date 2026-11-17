@@ -513,6 +513,7 @@
     <div class="life"><b id="uiLife">25</b><span>基地血量</span></div>
     <div><b id="uiWave">0/30</b><span>波次</span></div>
     <div><b id="uiEnemy">0</b><span>场上怪物</span></div>
+    <div><b id="uiFps">60</b><span>FPS</span></div>
   </div>
   <div class="ctrls">
     <button class="btn" id="btnWave">开始第 1 波</button>
@@ -520,6 +521,7 @@
     <button class="btn" id="btnPause">暂停</button>
     <button class="btn" id="btnAutoBuild">自动建造</button>
     <button class="btn on" id="btnAutoSkill">自动技能</button>
+    <button class="btn" id="btnEndless">无尽</button>
     <button class="btn" id="btnBase">基地强化</button>
     <button class="btn" id="btnBgm">音乐</button>
     <button class="btn" id="btnLevel">第 1 关</button>
@@ -582,8 +584,8 @@ const WAVE_MAX = 30;
 const KILL_GOLD_RATE = 0.75;   // 击杀金币系数
 // 越往后击杀收益越低：第 1 波 ×1.00，第 10 波 ×0.82，第 20 波 ×0.68，第 30 波 ×0.58
 function killGoldDecay() {
-  // 前 15 波掉落 +50%，15 波后 -50%
-  return S.wave <= 15 ? 1.5 : 0.5;
+  // 前 15 波掉落 +50%；15 波后 -56%（在原来的 -50% 基础上再削 12%）
+  return S.wave <= 15 ? 1.5 : 0.44;
 }
 const BRIDGE_LIFT = 0.40;   // 高架桥面抬升（格）
 
@@ -863,13 +865,13 @@ const ITEMS = {
   airstrike: { name: '空袭',     color: '#ff6b3d', icon: '✈', targeted: true,
                desc: '点击地图，对该区域降下 5 枚炸弹' },
   freeze:    { name: '时间冻结', color: '#5ad1ff', icon: '❄', targeted: false,
-               desc: '全场敌人定身 4 秒' },
+               desc: '全场敌人定身 6 秒（可叠加，上限 20 秒）' },
   gold:      { name: '金币袋',   color: '#ffc94a', icon: '$', targeted: false,
                desc: '立刻 +420 金币' },
   repair:    { name: '基地维修', color: '#4ad991', icon: '+', targeted: false,
                desc: '基地血量 +6（上限 25）' },
   rage:      { name: '狂怒药水', color: '#c084fc', icon: '!', targeted: false,
-               desc: '所有炮塔射速 ×2，持续 8 秒' },
+               desc: '所有炮塔射速 ×2，8 秒（可叠加，上限 30 秒）' },
 };
 const ITEM_KEYS = Object.keys(ITEMS);
 
@@ -1414,6 +1416,7 @@ function newState(keepSeed, level) {
     spawnTimer: 0,
     nextT: 8,
     speed: 1,
+    fast10Left: 60,   // 10 倍速剩余可用秒数
     paused: false,
     over: false,
     won: false,
@@ -1812,7 +1815,6 @@ function waveComposition(w) {
   if (w >= 5) add('levitator', 1);
   if (w >= 5) add('ufo', 1 + Math.floor((w - 5) / 10));
   if (w >= 6 && w % 2 === 0) add('rider', 2 + Math.floor(w / 7));
-  if (w >= 12 && w % 3 === 0) add('flock', w >= 15 ? 140 : 70);
   if (w >= 2) {
     add('totemMage', 1 + Math.floor(w / 14));
   }
@@ -1918,6 +1920,7 @@ function evMul(key) {
 }
 
 const _drawBuf = [];
+const _bufGround = [], _bufAir = [], _bufGiant = [];
 
 function spawnEnemy(type, hpScale, route, opts) {
   if (S.enemies.length >= 520) return;
@@ -1934,7 +1937,9 @@ function spawnEnemy(type, hpScale, route, opts) {
   const d = ENEMY_DEF[type];
   const r = (S.routeCount === 1) ? 0 : (route === 1 ? 1 : 0);
   opts = opts || {};
-  const hp = (opts.hpOverride != null ? opts.hpOverride : d.hp * hpScale) * evMul('enemyHp');
+  let hp = (opts.hpOverride != null ? opts.hpOverride : d.hp * hpScale) * evMul('enemyHp');
+  // 后期整体难度 +10%（16 波起）
+  if (S.wave >= 16) hp *= 1.10;
   let t0 = opts.t || 0;
   if (d.emerge && opts.t == null) {
     const len = S.routes[r].length - 2;
@@ -1961,6 +1966,8 @@ function spawnEnemy(type, hpScale, route, opts) {
     x: p0.x, y: p0.y,
     dead: false,
   };
+  // 普通怪随机配色
+  if (type === 'normal') e.tintIdx = (Math.random() * TINT_COLORS.length) | 0;
   if (d.giant) { e.giant = d.giant; e.gt = 0; e.gcd = 4; if (S.wave >= 16) e.hp = e.maxHp = Math.round(e.hp * 0.8); }
   if (d.noLeak) e.noLeak = true;
   if (type === 'tank') {
@@ -2033,9 +2040,32 @@ function pathPos(t, route) {
 /* ══════════════════════════════════════════════════════════════
    塔逻辑
    ══════════════════════════════════════════════════════════════ */
+let _statFrame = 0;
+const _statCache = new WeakMap();
+
 function towerStats(t) {
+  const hit = _statCache.get(t);
+  // 同一帧且等级/分支未变才复用，避免升级后读到旧数值
+  if (hit && hit.__f === _statFrame && hit.__lv === t.level && hit.__br === t.branch) return hit;
+  const s2 = towerStatsRaw(t);
+  s2.__f = _statFrame;
+  s2.__lv = t.level;
+  s2.__br = t.branch;
+  _statCache.set(t, s2);
+  return s2;
+}
+
+function towerStatsRaw(t) {
   const def = TOWER_DEF[t.type];
-  if (t.level <= 2) return Object.assign({}, def.lv[t.level - 1]);
+  if (t.level <= 2) {
+    const s0 = Object.assign({}, def.lv[t.level - 1]);
+    const lp0 = (t.level === 1 ? 0.90 : 1.15);
+    if (s0.dmg) s0.dmg *= lp0;
+    if (s0.burn) s0.burn *= lp0;
+    if (s0.dps) s0.dps *= lp0;
+    if (s0.range) s0.range *= (1 + (lp0 - 1) * 0.25);
+    return s0;
+  }
   const br = def.evolve[t.branch];
   const s = Object.assign({}, br.stats);
   if (t.level >= 4 && br.l4 && br.l4.mult) {
@@ -2043,6 +2073,16 @@ function towerStats(t) {
       if (s[k] != null) s[k] = s[k] * br.l4.mult[k];
     }
   }
+  // 等级强度：越高等级越强（同一份金币投入，升级收益高于铺塔）
+  const LV_POWER = { 1: 0.90, 2: 1.15, 3: 1.45, 4: 1.85 };
+  const lp = LV_POWER[t.level] || 1;
+  if (lp !== 1) {
+    if (s.dmg) s.dmg = s.dmg * lp;
+    if (s.burn) s.burn = s.burn * lp;
+    if (s.dps) s.dps = s.dps * lp;
+    if (s.range) s.range = s.range * (1 + (lp - 1) * 0.25);
+  }
+
   // 高射炮强化
   if (t.type === 'aa') {
     if (s.dmg) s.dmg *= 1.35;
@@ -2151,6 +2191,24 @@ function releaseTowerCell(t) {
 }
 
 /** 军火补给事件期间建塔/升级半价 */
+// 各塔基础血量（等级 1），按定位区分：脆皮输出 / 重装辅助
+const TOWER_HP = {
+  gun: 68, frost: 72, tesla: 78, aa: 80, sniper: 82, flame: 88,
+  wind: 86, cannon: 92, poison: 94, missile: 96, magnet: 104,
+  railgun: 110, holy: 118, totem: 130,
+};
+const HP_LV = { 1: 0.85, 2: 1.15, 3: 1.6, 4: 2.2 };   // 升级显著加血
+
+function towerMaxHp(t) {
+  const base = TOWER_HP[t.type] || 90;
+  return Math.round(base * (HP_LV[t.level] || 1));
+}
+function refreshTowerHp(t, heal) {
+  const m = towerMaxHp(t);
+  t.maxHp = m;
+  t.hp = heal ? m : Math.min(m, t.hp || m);
+}
+
 function costOf(base) {
   return Math.round(base * ((S.event && S.event.def.discount) ? 0.5 : 1));
 }
@@ -2172,13 +2230,12 @@ function buildTower(id, type) {
     activeT: 0, cdActive: 0,
   };
   S.grid[id] = BUILT;
-  t.hp = 100; t.maxHp = 100;
+  refreshTowerHp(t, true);
   if (S.boon && S.boon[id]) t.boon = true;
   if (S.goldT && S.goldT[id]) t.goldGen = 2.5;
   if (S.highT && S.highT[id]) t.high = true;
   if (type === 'barracks') t.rally = findRally(t, def.lv[0].range);
   S.towers.push(t);
-  logEvent('建造 ' + def.name + '（-' + cost + ' 金）', 'build');
   sfx('build');
   return t;   // 返回塔对象，方便调用方继续处理
 }
@@ -2188,6 +2245,24 @@ function canTarget(t, e) {
   const cap = TOWER_AIR[t.type] || 'ground';
   if (e.flying || e.airborne) return cap === 'air' || cap === 'both';
   return cap === 'ground' || cap === 'both';
+}
+
+const EGRID_CELL = 3;
+const _egrid = new Map();
+let _egridStamp = -1, _egridS = null;
+
+function ensureEnemyGrid() {
+  if (_egridS === S && _egridStamp === S.stepStamp) return;
+  _egridS = S;
+  _egridStamp = S.stepStamp;
+  _egrid.clear();
+  for (const e of S.enemies) {
+    if (e.dead) continue;
+    const k = Math.floor(e.x / EGRID_CELL) + ',' + Math.floor(e.y / EGRID_CELL);
+    let a = _egrid.get(k);
+    if (!a) { a = []; _egrid.set(k, a); }
+    a.push(e);
+  }
 }
 
 function pickTarget(t, range) {
@@ -2203,7 +2278,14 @@ function pickTarget(t, range) {
 
   let best = null, bestVal = -Infinity;      // 普通目标
   let bestF = null, bestFVal = -Infinity;    // 鸟群（最低优先）
-  for (const e of S.enemies) {
+  ensureEnemyGrid();
+  const gx0 = Math.floor((cx - range) / EGRID_CELL), gx1 = Math.floor((cx + range) / EGRID_CELL);
+  const gy0 = Math.floor((cy - range) / EGRID_CELL), gy1 = Math.floor((cy + range) / EGRID_CELL);
+  for (let gx = gx0; gx <= gx1; gx++) {
+  for (let gy = gy0; gy <= gy1; gy++) {
+  const cellArr = _egrid.get(gx + ',' + gy);
+  if (!cellArr) continue;
+  for (const e of cellArr) {
     if (e.dead) continue;
     const dx = e.x - cx, dy = e.y - cy;
     const d2 = dx * dx + dy * dy;
@@ -2220,7 +2302,25 @@ function pickTarget(t, range) {
       bestVal = v; best = e;
     }
   }
+  }
+  }
   return best || bestF;   // 只有没有别的目标时才打鸟群
+}
+
+// BOSS 级单位：不被冰冻/眩晕，改为积累"易伤"
+function isBossLike(e) {
+  return e.type === 'boss' || e.type === 'dragon' || !!e.giant;
+}
+// 施加眩晕；对 BOSS 转为易伤，返回是否真的被冻住
+function stunEnemy(e, dur) {
+  if (!e || e.dead) return false;
+  if (isBossLike(e)) {
+    e.bossVuln = Math.min(16, (e.bossVuln || 0) + dur);
+    addFx(e.x, e.y, 'tp', 0.35);
+    return false;
+  }
+  e.stunT = Math.max(e.stunT || 0, dur);
+  return true;
 }
 
 function damageEnemy(e, dmg, src) {
@@ -2233,7 +2333,8 @@ function damageEnemy(e, dmg, src) {
   if (e.armorBuff) dmg *= e.armorBuff;
   if (e.type === 'ufo') e.hitAcc = (e.hitAcc || 0) + dmg;
   if (e.type === 'digger' && e.burrowT > 0) return 0;
-  let real = dmg * (e.markT > 0 ? (1 + (e.markBoost || 0.35)) : 1);
+  let real = dmg * (e.markT > 0 ? (1 + (e.markBoost || 0.35)) : 1)
+    * (e.bossVuln > 0 ? 1.35 : 1);   // BOSS 被控时转为易伤 +35%
   if (e.type === 'armored') real = Math.max(1, real - 25);
   if (e.enraged) real *= 0.8;          // 狂暴减伤
 
@@ -2276,7 +2377,7 @@ function damageEnemy(e, dmg, src) {
     S.gold += goldGain;
     S.kills++;
     if (e.type === 'boss' || e.type === 'dragon') {
-      logEvent(ENEMY_DEF[e.type].name + ' 被击杀 +' + goldGain + ' 金', 'boss');
+      logEvent(ENEMY_DEF[e.type].name + ' 被击杀', 'boss');
     } else {
       S.killBuf.n++;
       S.killBuf.gold += goldGain;
@@ -2581,7 +2682,7 @@ function fireTower(t, dt) {
       for (let i = 0; i < Math.round(st.chain) && cur; i++) {
         hit.add(cur);
         damageEnemy(cur, st.dmg, t);
-        if (st.stun) cur.stunT = Math.max(cur.stunT, st.stun);
+        if (st.stun) stunEnemy(cur, st.stun);
         let next = null, bd = 3.4;
         for (const e of S.enemies) {
           if (e.dead || hit.has(e) || !canTarget(t, e)) continue;
@@ -2784,6 +2885,8 @@ function tryUpgradeAuto(t) {
   if (t.level === 1) t.level = 2;
   else if (t.level === 2) { t.level = 3; t.branch = 0; }
   else t.level = 4;
+    refreshTowerHp(t, true);
+  refreshTowerHp(t, true);
   addFx(t.x + 0.5, t.y + 0.5, 'gold', 0.9, 'Lv' + t.level);
   sfx('upgrade');
   return true;
@@ -2892,7 +2995,7 @@ function updateVines(dt) {
     let dmg = 0;
     for (const e of o.held) {
       if (e.dead) continue;
-      e.stunT = Math.max(e.stunT, 0.3);
+      stunEnemy(e, 0.3);
       dmg += (10 + e.maxHp * 0.025) * dt;
     }
     if (dmg > 0) {
@@ -3047,7 +3150,7 @@ function useActive(t) {
     case 'aa':
       for (const e of S.enemies) {
         if (e.dead || !e.flying) continue;
-        e.stunT = Math.max(e.stunT, act.dur);
+        stunEnemy(e, act.dur);
       }
       addFx(cx, cy, 'boom', 0.7);
       break;
@@ -3096,12 +3199,24 @@ function applyItem(kind, wx, wy) {
   if (S.items[kind] <= 0) delete S.items[kind];
 
   switch (kind) {
-    case 'freeze':
+    case 'freeze': {
+      const FZ_CAP = 20;   // 叠加上限 20 秒
+      let total = 0;
       for (const e of S.enemies) {
         if (e.dead) continue;
-        e.stunT = Math.max(e.stunT, 6);
+        if (isBossLike(e)) {
+          e.bossVuln = Math.min(16, (e.bossVuln || 0) + 6);
+          addFx(e.x, e.y, 'tp', 0.4);
+        } else {
+          e.stunT = Math.min(FZ_CAP, (e.stunT || 0) + 6);
+          if (e.stunT > total) total = e.stunT;
+        }
       }
+      flashScreen('#5ad1ff', 0.30);
+      announce('时间冻结 · 全场定身 ' + Math.round(total) + ' 秒', '#5ad1ff');
+      sfx('freeze');
       break;
+    }
     case 'gold':
       S.gold += 420;
       toast('+420 金币');
@@ -3111,8 +3226,8 @@ function applyItem(kind, wx, wy) {
       toast('基地 +6 血');
       break;
     case 'rage':
-      S.rageT = 8;
-      toast('全场炮塔射速 ×2，持续 8 秒');
+      S.rageT = Math.min(30, (S.rageT || 0) + 8);   // 叠加上限 30 秒
+      toast('全场炮塔射速 ×2，剩余 ' + Math.round(S.rageT) + ' 秒');
       break;
     case 'airstrike':
       for (let i = 0; i < 8; i++) {
@@ -3221,7 +3336,7 @@ function destroyObstacle(o) {
     if (cid >= 0) { S.obsAt[cid] = -1; S.grid[cid] = GRASS; }
     addFx(o.cx, o.cy, 'boom', 0.9);
     S.gold += 120;
-    logEvent('摧毁了魔物巢穴 +120 金', 'build');
+    logEvent('摧毁了魔物巢穴', 'build');
     sfx('boom');
     const i4 = S.obs.indexOf(o);
     if (i4 >= 0) S.obs.splice(i4, 1);
@@ -3382,6 +3497,10 @@ function dropLevitator(e) {
 }
 
 function updateGiant(e, dt) {
+  // 被冻结时暂停一切技能；注意巨人走的是独立更新分支，
+  // 普通兵的 stunT 递减在移动逻辑里，这里必须自己扣，否则会永久冻结
+  if (e.bossVuln > 0) e.bossVuln -= dt;
+  if (e.stunT > 0) { e.stunT -= dt; return; }
   const b = mapBounds();
   e.gt = (e.gt || 0) + dt;
   const cx2 = (b.minX + b.maxX) / 2;
@@ -3486,13 +3605,27 @@ function updateGiant(e, dt) {
     const bdmg = sup ? 7 : (w18 ? 8 : (late ? 11 : 9));
     for (let k = 0; k < bombs; k++) {
       let bx, by;
-      if (!sup && S.towers.length && Math.random() < 0.75) {
+      // 超级模式：50% 瞄准炮塔、50% 全路线随机；普通模式：75% 瞄准炮塔
+      const aimTower = S.towers.length > 0 &&
+        Math.random() < (sup ? 0.5 : 0.75);
+      if (aimTower) {
         const tw = S.towers[(Math.random() * S.towers.length) | 0];
-        bx = tw.x + 0.5 + rnd(-2.2, 2.2);
-        by = tw.y + 0.5 + rnd(-2.2, 2.2);
+        const jit = sup ? 2.6 : 2.2;
+        bx = tw.x + 0.5 + rnd(-jit, jit);
+        by = tw.y + 0.5 + rnd(-jit, jit);
       } else {
-        const pp = pathPos(Math.floor(Math.random() * (S.routes[0].length - 2)), 0);
-        bx = pp.x; by = pp.y;
+        const nR = S.routes.length;
+        const ri = (nR > 1 && Math.random() < 0.5) ? ((Math.random() * nR) | 0) : 0;
+        const rt = S.routes[ri] || S.routes[0];
+        const idx = Math.floor(Math.random() * Math.max(1, rt.length - 2));
+        const pp = pathPos(idx, ri);
+        // 沿路径法线方向抖动，落点分布到路两侧
+        const c0 = rt[idx] || rt[0];
+        const c1 = rt[Math.min(rt.length - 1, idx + 1)] || c0;
+        const ang = Math.atan2(c1.y - c0.y, c1.x - c0.x) + Math.PI / 2;
+        const off = rnd(-(sup ? 1.8 : 1.5), (sup ? 1.8 : 1.5));
+        bx = pp.x + Math.cos(ang) * off;
+        by = pp.y + Math.sin(ang) * off;
       }
       addFx(bx, by, 'bombwave', sup ? 1.5 : 1.05);
       if (sup) addFx(bx, by, 'boom', 0.6);
@@ -3582,7 +3715,7 @@ function damageTower(t, dmg) {
   if (S.selected === t) deselect();
   addFx(t.x + 0.5, t.y + 0.5, 'boom', 1.1);
   toast('炮塔被炸毁，返还 ' + refund + ' 金');
-  logEvent('炮塔被炸毁 +' + refund + ' 金', 'boss');
+  logEvent('炮塔被炸毁', 'boss');
 }
 
 function updateFlock(e, dt) {
@@ -3621,9 +3754,35 @@ function enemyFace(e) {
   return e.faceX || 1;
 }
 
+// ── 普通怪配色：预渲染染色贴图（兼容 Safari，不依赖 ctx.filter）──
+const TINT_COLORS = ['#7fe3ff', '#ffd76a', '#ff9ad1', '#9dff9a', '#c084fc', '#ffb27f'];
+const _tintCache = new Map();
+
+function tintedTex(img, color) {
+  const key = color + ':' + (img.src ? img.src.length : 0);
+  let c = _tintCache.get(key);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = 'source-atop';
+  g.globalAlpha = 0.58;
+  g.fillStyle = color;
+  g.fillRect(0, 0, c.width, c.height);
+  g.globalAlpha = 1;
+  c.complete = true;   // 让调用方的 img.complete 检查通过（canvas 没有此属性）
+  _tintCache.set(key, c);
+  return c;
+}
+
 function enemyTex(e) {
-  if (e.type === 'dragonYoung') return ENEMY_IMG.dragon;
-  return ENEMY_IMG[e.type] || null;
+  const base = (e.type === 'dragonYoung') ? ENEMY_IMG.dragon : (ENEMY_IMG[e.type] || null);
+  if (!base) return null;
+  if (e.tintIdx != null && base.complete && base.width) {
+    return tintedTex(base, TINT_COLORS[e.tintIdx % TINT_COLORS.length]);
+  }
+  return base;
 }
 
 function drawTexEnemy(e) {
@@ -3645,6 +3804,34 @@ function drawTexEnemy(e) {
   }
   ctx.drawImage(img, -H / 2, -H * 0.62, H, H);
   ctx.restore();
+
+  // 冻结：冰霜罩
+  if (e.stunT > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const fr = H * 0.42;
+    const gt = ctx.createRadialGradient(q[0], q[1], fr * 0.2, q[0], q[1], fr);
+    gt.addColorStop(0, 'rgba(160,230,255,.34)');
+    gt.addColorStop(0.7, 'rgba(110,200,255,.22)');
+    gt.addColorStop(1, 'rgba(90,209,255,0)');
+    ctx.fillStyle = gt;
+    ctx.beginPath(); ctx.arc(q[0], q[1], fr, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(190,240,255,.85)';
+    ctx.lineWidth = Math.max(1.5, cam.z * 0.045);
+    ctx.beginPath(); ctx.arc(q[0], q[1] - H * 0.1, fr * 0.95, 0, Math.PI * 2); ctx.stroke();
+    // 冰晶
+    ctx.strokeStyle = 'rgba(220,250,255,.75)';
+    ctx.lineWidth = Math.max(1, cam.z * 0.03);
+    for (let i = 0; i < 6; i++) {
+      const a7 = i * Math.PI / 3 + S.time * 0.3;
+      const r1 = fr * 0.55, r2 = fr * (0.85 + Math.sin(S.time * 3 + i) * 0.05);
+      ctx.beginPath();
+      ctx.moveTo(q[0] + Math.cos(a7) * r1, q[1] - H * 0.1 + Math.sin(a7) * r1);
+      ctx.lineTo(q[0] + Math.cos(a7) * r2, q[1] - H * 0.1 + Math.sin(a7) * r2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   // 护盾环
   if (e.shield > 0) {
@@ -4154,13 +4341,21 @@ function addFx(x, y, type, life, text) {
 let lastT = 0;
 
 function update(dt) {
+  if (S.speed === 10) {
+    // update() 每帧会按倍速执行多次，这里要按份数折算，保证 60 秒是真实时间
+    S.fast10Left = Math.max(0, (S.fast10Left || 0) - dt / Math.max(1, S.speed));
+    if (S.fast10Left <= 0) {
+      S.speed = 1;
+      toast('10 倍速时间到，已恢复 1×');
+    }
+  }
+  S.stepStamp = (S.stepStamp | 0) + 1;   // 每步失效敌人空间网格
   if (S.paused || S.over) return;
 
   // 日志聚合：击杀与漏怪不能刷屏
   S.killBufT += dt;
   if (S.killBufT >= 1.6) {
     if (S.killBuf.n > 0) {
-      logEvent('击杀 ' + S.killBuf.n + ' 只（+' + S.killBuf.gold + ' 金）', 'kill');
       S.killBuf.n = 0;
       S.killBuf.gold = 0;
     }
@@ -4484,6 +4679,7 @@ function update(dt) {
       damageEnemy(e, e.burnDps * dt, null);
     }
     if (e.markT > 0) e.markT -= dt;
+    if (e.bossVuln > 0) e.bossVuln -= dt;
 
     // 浮空法师：飞抵基地附近或到达终点就投放
     if (e.type === 'levitator' && !e.dropped) {
@@ -4506,6 +4702,11 @@ function update(dt) {
       e.dead = true;
       const loss = e.type === 'dragon' ? 12 : e.type === 'boss' ? 8 : e.type === 'tank' ? 3 : 1;
       S.lives -= loss;
+    if (S.speed === 10) {
+      S.speed = 1;
+      toast('基地受损，10 倍速已自动关闭');
+      sfx('leak');
+    }
       S.leaked++;
       S.leakBuf.n++;
       S.leakBuf.hp += loss;
@@ -4626,8 +4827,17 @@ function update(dt) {
     toast('第 ' + S.wave + ' 波结束  +' + bonus + ' 金币');
     updateHud();
     if (S.wave >= WAVE_MAX && !S.won && !S.awaitChoice && S.enemies.length === 0) {
-      S.awaitChoice = true;
-      showEndChoice();
+      if (endlessMode) {
+        if (!S.endlessAnnounced) {
+          S.endlessAnnounced = true;
+          announce('无尽模式 · 继续挑战', '#ffcf6b');
+          logEvent('已开启无尽模式，波次持续提升', 'event');
+        }
+        S.won = false;
+      } else {
+        S.awaitChoice = true;
+        showEndChoice();
+      }
     }
   }
   updateHud();
@@ -4844,7 +5054,12 @@ function clampCam() {
   const halfW = cw / 2 / cam.z, halfH = ch / 2 / cam.z;
   const w = b.maxX - b.minX, h = b.maxY - b.minY;
   const mx = (b.minX + b.maxX) / 2, my = (b.minY + b.maxY) / 2;
-  cam.x = (halfW * 2 >= w) ? mx : clamp(cam.x, b.minX + halfW, b.maxX - halfW);
+  if (cw < 760 && ch > cw) {
+    // 竖屏：强制水平居中，避免后续镜头重设把画面推偏
+    cam.x = mx;
+  } else {
+    cam.x = (halfW * 2 >= w) ? mx : clamp(cam.x, b.minX + halfW, b.maxX - halfW);
+  }
   cam.y = (halfH * 2 >= h) ? my : clamp(cam.y, b.minY + halfH, b.maxY - halfH);
 }
 
@@ -4929,6 +5144,33 @@ function s2w(sx, sy) {
   return [(sx - cw / 2) / cam.z + cam.x, (sy - ch / 2 - (cam.oy || 0)) / cam.z + cam.y];
 }
 
+// 地形离屏缓存：把整张草地一次性画进位图，之后每帧只需 1 次 drawImage
+let terrainCv = null, terrainDirty = true;
+const TCELL = 40;   // 每格像素（越大越清晰，内存也越大）
+
+function buildTerrain() {
+  const size = N * TCELL;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const g = c.getContext('2d');
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const n = hash2(x, y);
+      g.fillStyle = 'hsl(' + (130 + n * 30) + ', 18%, ' + (17 + n * 5) + '%)';
+      g.fillRect(x * TCELL, y * TCELL, TCELL + 1, TCELL + 1);
+      const n2 = hash2(x + 5, y + 13);
+      if (n2 > 0.74) {
+        g.fillStyle = 'rgba(150,200,130,0.09)';
+        g.beginPath();
+        g.arc(x * TCELL + TCELL * n, y * TCELL + TCELL * n2, TCELL * 0.07, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  }
+  terrainCv = c;
+  terrainDirty = false;
+}
+
 function render() {
   ctx.save();
   if (S.shake > 0) {
@@ -4948,7 +5190,11 @@ function render() {
   const y0 = clamp(Math.floor(top) - 1, 0, N - 1), y1 = clamp(Math.ceil(bot) + 1, 0, N - 1);
 
   // 格子
-  if (S.mode !== 'hex') for (let y = y0; y <= y1; y++) {
+  if (S.mode !== 'hex') {
+    if (terrainDirty || !terrainCv) buildTerrain();
+    const [tx0, ty0] = w2s(0, 0);
+    ctx.drawImage(terrainCv, tx0, ty0, N * cam.z, N * cam.z);
+  } else for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const i = y * N + x;
       const [sx, sy] = w2s(x, y);
@@ -4959,7 +5205,7 @@ function render() {
       ctx.fillStyle = `hsl(${130 + n * 30}, 18%, ${17 + n * 5}%)`;
       ctx.fillRect(sx, sy, z + 0.6, z + 0.6);
       const n2 = hash2(x + 5, y + 13);
-      if (n2 > 0.74) {
+      if (S.q >= 2 && n2 > 0.74) {
         ctx.fillStyle = 'rgba(150,200,130,0.09)';
         ctx.beginPath();
         ctx.arc(sx + z * n, sy + z * n2, z * 0.07, 0, Math.PI * 2);
@@ -4978,15 +5224,23 @@ function render() {
   // ── 道路：用带圆角的粗线绘制，转角自然，不再是方块拼接 ──
   const lift = z * BRIDGE_LIFT;
 
+  const _pathCache = render._pc || (render._pc = new Map());
   const toPath = (cells, dy) => {
-    const p2 = new Path2D();
-    if (!cells || !cells.length) return p2;
+    if (!cells || !cells.length) return new Path2D();
+    // 关键帧：路线首格 + 长度 + 镜头（量化到 0.01）
+    const key = cells[0].x + ',' + cells[0].y + ',' + cells.length + ',' + dy +
+      '|' + cam.x.toFixed(2) + ',' + cam.y.toFixed(2) + ',' + cam.z.toFixed(2);
+    let p2 = _pathCache.get(key);
+    if (p2) return p2;
+    p2 = new Path2D();
     const q0 = w2s(cells[0].x + 0.5, cells[0].y + 0.5);
     p2.moveTo(q0[0], q0[1] + dy);
     for (let i = 1; i < cells.length; i++) {
       const q = w2s(cells[i].x + 0.5, cells[i].y + 0.5);
       p2.lineTo(q[0], q[1] + dy);
     }
+    if (_pathCache.size > 32) _pathCache.clear();
+    _pathCache.set(key, p2);
     return p2;
   };
 
@@ -5343,13 +5597,24 @@ function render() {
   drawBase();
 
   // 敌人：按高度分层绘制，飞行单位在最上层
+  // 视口范围（带 2 格余量），用于剔除屏幕外单位
+  const _vx0 = cam.x - cw / 2 / cam.z - 2, _vx1 = cam.x + cw / 2 / cam.z + 2;
+  const _vy0 = cam.y - ch / 2 / cam.z - 2, _vy1 = cam.y + ch / 2 / cam.z + 2;
   _drawBuf.length = 0;
-  for (const e of S.enemies) if (!e.dead) _drawBuf.push(e);
-  _drawBuf.sort((a, b) => {
-    const la = a.giant ? 3 : (a.flying || a.type === 'flock' ? 2 : 1);
-    const lb = b.giant ? 3 : (b.flying || b.type === 'flock' ? 2 : 1);
-    return la - lb;
-  });
+  _bufGround.length = 0;
+  _bufAir.length = 0;
+  _bufGiant.length = 0;
+  for (const e of S.enemies) {
+    if (e.dead) continue;
+    if (e.x < _vx0 || e.x > _vx1 || e.y < _vy0 || e.y > _vy1) continue;
+    if (e.giant) _bufGiant.push(e);
+    else if (e.flying || e.type === 'flock') _bufAir.push(e);
+    else _bufGround.push(e);
+  }
+  // 地面 → 飞行 → 巨型，无需每帧排序
+  for (const e of _bufGround) _drawBuf.push(e);
+  for (const e of _bufAir) _drawBuf.push(e);
+  for (const e of _bufGiant) _drawBuf.push(e);
   for (const e of _drawBuf) {
     drawEnemy(e);
     // 图腾法师：头顶名牌 + 底部紫环，避免混在怪群里看不见
@@ -5468,7 +5733,10 @@ function render() {
   }
 
   // 特效
-  for (const f of S.fx) drawFx(f);
+  for (const f of S.fx) {
+    if (f.x < _vx0 || f.x > _vx1 || f.y < _vy0 || f.y > _vy1) continue;
+    drawFx(f);
+  }
 
   ctx.restore();
 
@@ -5505,12 +5773,38 @@ function drawTower(sx, sy, z, t, iconMode) {
   const R = z * (iconMode ? 1 : 0.42);
   const cx = sx, cy = sy;
 
+  // 狂怒药水：红色脉冲光环
+  if (!iconMode && S.rageT > 0) {
+    const pul = 0.5 + 0.5 * Math.sin(S.time * 9);
+    const k7 = Math.min(1, S.rageT / 1.2);   // 末尾淡出
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const rg = ctx.createRadialGradient(cx, cy, R * 0.35, cx, cy, R * 1.55);
+    rg.addColorStop(0, 'rgba(255,110,80,' + (0.34 + pul * 0.22) * k7 + ')');
+    rg.addColorStop(0.6, 'rgba(255,70,50,' + (0.20 + pul * 0.14) * k7 + ')');
+    rg.addColorStop(1, 'rgba(255,40,40,0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.7, 0, Math.PI * 2); ctx.fill();
+    // 旋转的脉冲环
+    ctx.strokeStyle = 'rgba(255,120,90,' + (0.65 + pul * 0.35) * k7 + ')';
+    ctx.lineWidth = Math.max(2, z * 0.10);
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * (1.45 + pul * 0.16), S.time * 2.2, S.time * 2.2 + Math.PI * 1.5);
+    ctx.stroke();
+    // 内圈红点
+    ctx.fillStyle = 'rgba(255,180,120,' + (0.5 + pul * 0.4) * k7 + ')';
+    ctx.beginPath(); ctx.arc(cx, cy - R * 1.85, Math.max(1.6, z * 0.055), 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   if (!iconMode) {
-    // 落影
+    // 落影（低画质时省略）
+    if (S.q < 2) { /* skip shadow */ } else {
     ctx.fillStyle = 'rgba(0,0,0,.42)';
     ctx.beginPath();
     ctx.ellipse(cx + z * 0.06, cy + z * 0.11, R * 1.25, R * 0.9, 0, 0, Math.PI * 2);
     ctx.fill();
+    }
 
     // 石台（径向渐变）
     const g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.45, R * 0.15, cx, cy, R * 1.2);
@@ -6873,6 +7167,24 @@ function drawEnemy(e) {
   }
 }
 
+const _glowCache = new Map();
+function glowSprite(col) {
+  let c = _glowCache.get(col);
+  if (c) return c;
+  const size = 64;
+  c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grd.addColorStop(0, '#ffffff');
+  grd.addColorStop(0.35, col);
+  grd.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, size, size);
+  _glowCache.set(col, c);
+  return c;
+}
+
 function drawShot(s) {
   const z = cam.z;
   const [sx, sy] = w2s(s.x, s.y);
@@ -6895,14 +7207,9 @@ function drawShot(s) {
     ctx.lineCap = 'butt';
   };
   const orb = (col, rad) => {
-    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, rad);
-    g.addColorStop(0, '#ffffff');
-    g.addColorStop(0.35, col);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(sx, sy, rad, 0, Math.PI * 2);
-    ctx.fill();
+    // 用预渲染贴图代替每次新建渐变（子弹数量多时收益显著）
+    const img = glowSprite(col);
+    ctx.drawImage(img, sx - rad, sy - rad, rad * 2, rad * 2);
   };
 
   ctx.save();
@@ -7502,7 +7809,16 @@ const panel = document.getElementById('panel');
 
 let hudCache = { gold: -1, lives: -1, wave: -1, enemy: -1, active: null, next: -99 };
 
-function updateHud() {
+let _hudLastT = 0;
+
+function updateHud(force) {
+  const now = performance.now();
+  if (!force && now - _hudLastT < 100) return;
+  _hudLastT = now;
+  updateHudBody();
+}
+
+function updateHudBody() {
   const g = Math.floor(S.gold);
   if (g !== hudCache.gold) {
     uiGold.textContent = g;
@@ -7631,7 +7947,7 @@ function renderPanel() {
     b.textContent = '升级到 Lv2 — ' + cost + ' 金';
     b.onclick = () => {
       if (S.gold < cost) { toast('金币不够'); return; }
-      S.gold -= cost; t.level = 2; t.totalCost += cost;
+      S.gold -= cost; t.level = 2; t.totalCost += cost; refreshTowerHp(t, true);
       sfx('upgrade'); renderPanel(); updateHud();
     };
     act.appendChild(b);
@@ -7644,7 +7960,7 @@ function renderPanel() {
       eb.onclick = () => {
         const c = costOf(ev.cost);
         if (S.gold < c) { toast('金币不够'); return; }
-        S.gold -= c; t.level = 3; t.branch = i; t.totalCost += c;
+        S.gold -= c; t.level = 3; t.branch = i; t.totalCost += c; refreshTowerHp(t, true);
         sfx('upgrade'); renderPanel(); updateHud();
       };
       act.appendChild(eb);
@@ -7658,7 +7974,7 @@ function renderPanel() {
     b.onclick = () => {
       const c = costOf(l4.cost);
       if (S.gold < c) { toast('金币不够'); return; }
-      S.gold -= c; t.level = 4; t.totalCost += c;
+      S.gold -= c; t.level = 4; t.totalCost += c; refreshTowerHp(t, true);
       sfx('upgrade'); renderPanel(); updateHud();
     };
     act.appendChild(b);
@@ -7748,6 +8064,17 @@ if (btnAutoBuild) btnAutoBuild.onclick = () => {
   toast(autoBuild ? '自动建造：开启' : '自动建造：关闭');
 };
 const btnAutoSkill = document.getElementById('btnAutoSkill');
+let endlessMode = false;
+const btnEndless = document.getElementById('btnEndless');
+if (btnEndless) btnEndless.onclick = () => {
+  endlessMode = !endlessMode;
+  btnEndless.classList.toggle('on', endlessMode);
+  toast(endlessMode ? '无尽模式：30 波后继续挑战' : '无尽模式：30 波后结算');
+  sfx('upgrade');
+};
+
+let _fpsAcc = 0, _fpsFrames = 0;
+let fpsEMA = 60;
 if (btnAutoSkill) btnAutoSkill.onclick = () => {
   autoSkill = !autoSkill;
   btnAutoSkill.classList.toggle('on', autoSkill);
@@ -7882,7 +8209,13 @@ btnLevel.onclick = () => {
 };
 
 btnSpeed.onclick = () => {
-  S.speed = S.speed >= 5 ? 1 : S.speed + 1;
+  if (S.speed >= 5) {
+    // 5 → 10（需剩余加速时间）
+    if ((S.fast10Left || 0) > 0) S.speed = 10;
+    else { S.speed = 1; toast('10 倍速已用尽'); }
+  } else {
+    S.speed = S.speed + 1;
+  }
   btnSpeed.textContent = S.speed + '×';
   btnSpeed.classList.toggle('on', S.speed > 1);
 };
@@ -8443,6 +8776,7 @@ function showConfirm(title, text, okLabel, onOk) {
 }
 
 function restart(lv) {
+  terrainDirty = true;
   S = newState(false, lv || 1);
   document.getElementById('over').classList.remove('on');
   deselect();
@@ -8466,10 +8800,26 @@ function restart(lv) {
 function tick(now) {
   requestAnimationFrame(tick);
   if (!lastT) lastT = now;
+  // FPS 统计
+  _fpsFrames++;
+  _fpsAcc += Math.min(0.2, (now - lastT) / 1000 || 0);
+  if (_fpsAcc >= 0.5) {
+    const f = Math.round(_fpsFrames / _fpsAcc);
+    const el = document.getElementById('uiFps');
+    if (el) el.textContent = f;
+    fpsEMA = fpsEMA * 0.75 + f * 0.25;
+    if (S) S.q = fpsEMA > 52 ? 2 : (fpsEMA > 42 ? 1 : 0);
+    if (S && S.speed === 10) {
+      const bs = document.getElementById('btnSpeed');
+      if (bs) bs.textContent = '10× (' + Math.ceil(S.fast10Left || 0) + 's)';
+    }
+    _fpsFrames = 0; _fpsAcc = 0;
+  }
   let dt = (now - lastT) / 1000;
   lastT = now;
   dt = Math.min(dt, 0.05);
 
+  _statFrame++;
   const steps = S.speed;
   for (let i = 0; i < steps; i++) update(dt);
   render();
