@@ -522,6 +522,7 @@
     <button class="btn" id="btnAutoBuild">自动建造</button>
     <button class="btn on" id="btnAutoSkill">自动技能</button>
     <button class="btn" id="btnEndless">无尽</button>
+    <button class="btn" id="btnQuality">画质 高</button>
     <button class="btn" id="btnBase">基地强化</button>
     <button class="btn" id="btnBgm">音乐</button>
     <button class="btn" id="btnLevel">第 1 关</button>
@@ -1416,6 +1417,7 @@ function newState(keepSeed, level) {
     spawnTimer: 0,
     nextT: 8,
     speed: 1,
+    q: 2,             // 画质档位：2 高 / 1 中 / 0 低
     fast10Left: 60,   // 10 倍速剩余可用秒数
     paused: false,
     over: false,
@@ -8090,6 +8092,25 @@ if (btnAutoBuild) btnAutoBuild.onclick = () => {
   toast(autoBuild ? '自动建造：开启' : '自动建造：关闭');
 };
 const btnAutoSkill = document.getElementById('btnAutoSkill');
+const QUALITY_NAME = ['低', '中', '高'];
+const btnQuality = document.getElementById('btnQuality');
+function applyQuality(q) {
+  if (!S) return;
+  const v = Number.isFinite(q) ? q : 2;
+  S.q = clamp(v, 0, 2);
+  if (btnQuality) {
+    btnQuality.textContent = '画质 ' + QUALITY_NAME[S.q];
+    btnQuality.classList.toggle('on', S.q !== 2);
+  }
+}
+if (btnQuality) btnQuality.onclick = () => {
+  const cur = Number.isFinite(S.q) ? S.q : 2;
+  const next = (cur + 2) % 3;   // 高 → 中 → 低 → 高
+  applyQuality(next);
+  toast('画质：' + QUALITY_NAME[next] + (next === 2 ? '（完整细节）' : (next === 0 ? '（极简，最流畅）' : '（省略杂物）')));
+  sfx('upgrade');
+};
+
 let endlessMode = false;
 const btnEndless = document.getElementById('btnEndless');
 if (btnEndless) btnEndless.onclick = () => {
@@ -8101,6 +8122,8 @@ if (btnEndless) btnEndless.onclick = () => {
 
 let _fpsAcc = 0, _fpsFrames = 0;
 let fpsEMA = 60;
+// 画质调节状态（带迟滞，避免升高后又掉帧来回抖动）
+let _qHoldUntil = 0, _qUpStreak = 0, _qUpAt = -99, _qLock = false;
 if (btnAutoSkill) btnAutoSkill.onclick = () => {
   autoSkill = !autoSkill;
   btnAutoSkill.classList.toggle('on', autoSkill);
@@ -8803,6 +8826,9 @@ function showConfirm(title, text, okLabel, onOk) {
 
 function restart(lv) {
   terrainDirty = true;
+  // 重开时重置画质调节状态，让新局从最高画质开始
+  fpsEMA = 60;
+  if (typeof applyQuality === 'function') setTimeout(() => applyQuality(2), 0);
   S = newState(false, lv || 1);
   document.getElementById('over').classList.remove('on');
   deselect();
@@ -8833,8 +8859,7 @@ function tick(now) {
     const f = Math.round(_fpsFrames / _fpsAcc);
     const el = document.getElementById('uiFps');
     if (el) el.textContent = f;
-    fpsEMA = fpsEMA * 0.75 + f * 0.25;
-    if (S) S.q = fpsEMA > 52 ? 2 : (fpsEMA > 42 ? 1 : 0);
+    fpsEMA = fpsEMA * 0.75 + f * 0.25;   // 仅用于显示，画质由玩家手动决定
     if (S && S.speed === 10) {
       const bs = document.getElementById('btnSpeed');
       if (bs) bs.textContent = '10× (' + Math.ceil(S.fast10Left || 0) + 's)';
