@@ -54,6 +54,14 @@
          border:1px solid var(--line);border-radius:14px;padding:14px;z-index:10;
          backdrop-filter:blur(12px);display:none}
   .panel.on{display:block}
+  #pClose{
+    position:absolute;top:8px;right:8px;width:26px;height:26px;padding:0;
+    border-radius:50%;border:1px solid rgba(255,90,90,.65);
+    background:rgba(255,60,60,.18);color:#ff8a8a;
+    font-size:16px;line-height:1;font-weight:700;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;font-family:inherit;
+  }
+  #pClose:hover{background:rgba(255,70,70,.35);color:#fff}
   .panel h3{margin:0 0 2px;font-size:15px;font-weight:650}
   .panel .lv{font-size:11.5px;color:var(--muted);margin-bottom:10px}
   .rows{font-size:12.5px;line-height:1.9;color:#b9c6d8;margin-bottom:12px}
@@ -203,18 +211,25 @@
   /* ── 手机：基地面板改成满宽，避免居中偏移 ── */
   @media (max-width: 760px) {
     #basePanel {
-      left: 8px;
-      right: 8px;
+      left: 10px;
+      right: 10px;
       width: auto;
       max-width: none;
       top: 50%;
       transform: translateY(-50%);
-      padding: 12px 14px;
+      padding: 10px 12px;
       box-sizing: border-box;
+      border-radius: 12px;
+      background: rgba(12, 17, 24, 0.74) !important;
+      -webkit-backdrop-filter: blur(7px);
+      backdrop-filter: blur(7px);
+      border: 1px solid rgba(120, 170, 220, .3);
+      max-height: 62vh;
+      overflow-y: auto;
     }
-    #basePanel h3 { font-size: 15px; }
-    #basePanel p { font-size: 12px; }
-    #basePanel .btn { padding: 9px 10px; font-size: 13px; }
+    #basePanel h3 { font-size: 13.5px !important; margin: 0 0 5px !important; padding-right: 24px; }
+    #basePanel p { font-size: 10.5px !important; margin: 4px 0 7px !important; }
+    #basePanel .btn { padding: 6px 9px !important; font-size: 11.5px !important; margin-bottom: 4px !important; }
   }
 
   /* ── 手机：事件栏缩小，别挡地图 ── */
@@ -338,6 +353,32 @@
       left: 8px;
       right: 8px;
     }
+  }
+
+  /* ── 手机：防御塔面板紧凑半透明化 ── */
+  @media (max-width: 760px) {
+    #panel {
+      left: 10px !important;
+      right: 10px !important;
+      top: auto !important;
+      bottom: 250px !important;
+      width: auto !important;
+      max-height: 44vh;
+      overflow-y: auto;
+      padding: 9px 11px 10px !important;
+      border-radius: 12px !important;
+      background: rgba(10, 15, 23, 0.72) !important;
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(120, 170, 220, .28) !important;
+    }
+    #panel h3 { font-size: 13px !important; margin: 0 0 1px !important; padding-right: 26px; }
+    #panel .lv { font-size: 10.5px !important; margin-bottom: 5px !important; }
+    #panel .rows { font-size: 10.5px !important; line-height: 1.55 !important; margin-bottom: 6px !important; }
+    #panel .btn { padding: 6px 8px !important; font-size: 11px !important; margin-top: 4px !important; }
+    #panel .prio { gap: 4px !important; margin-top: 5px !important; }
+    #panel .prio .btn { font-size: 10px !important; padding: 5px 3px !important; }
+    #pClose { top: 6px; right: 6px; width: 22px; height: 22px; font-size: 14px; }
   }
 
   /* ── 手机 / 平板适配 ── */
@@ -502,6 +543,25 @@
     }
   }
 
+  @media (max-width: 760px) {
+    #panel.on{
+      position: fixed !important;
+      left: 10px !important;
+      right: 10px !important;
+      width: auto !important;
+      max-width: none !important;
+      top: auto !important;
+      bottom: 250px !important;
+      max-height: 46vh !important;
+      overflow-y: auto !important;
+      padding: 9px 11px 10px !important;
+      background: rgba(10,15,23,.72) !important;
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
+      box-sizing: border-box !important;
+    }
+  }
+
 </style>
 </head>
 <body>
@@ -537,7 +597,10 @@
 <div class="log" id="log"></div>
 
 <div class="panel" id="panel">
-  <h3 id="pName"></h3>
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+    <h3 id="pName" style="margin:0"></h3>
+    <button id="pClose" aria-label="关闭" style="flex:0 0 auto;width:24px;height:24px;padding:0;border-radius:50%;border:1px solid rgba(255,90,90,.75);background:rgba(255,60,60,.28);color:#ff9090;font-size:16px;line-height:1;font-weight:700;font-family:inherit;display:flex;align-items:center;justify-content:center;cursor:pointer">×</button>
+  </div>
   <div class="lv" id="pLv"></div>
   <div class="rows" id="pRows"></div>
   <div class="prio" id="pPrio"></div>
@@ -5243,6 +5306,26 @@ function gameOver(won) {
    渲染
    ══════════════════════════════════════════════════════════════ */
 function applyMobileLayout() {
+  // 手机端：防御塔面板强制贴合屏幕宽度，避免内容把面板撑出屏幕
+  const pn = document.getElementById('panel');
+  if (pn) {
+    if (cw < 760) {
+      pn.style.setProperty('position', 'fixed', 'important');
+      pn.style.setProperty('left', '10px', 'important');
+      pn.style.setProperty('right', 'auto', 'important');
+      pn.style.setProperty('width', (cw - 20) + 'px', 'important');
+      pn.style.setProperty('max-width', (cw - 20) + 'px', 'important');
+      pn.style.setProperty('overflow-x', 'hidden', 'important');
+      pn.style.setProperty('top', 'auto', 'important');
+      pn.style.setProperty('bottom', '250px', 'important');
+      pn.style.setProperty('box-sizing', 'border-box', 'important');
+      pn.style.setProperty('overflow-y', 'auto', 'important');
+      pn.style.setProperty('max-height', '44vh', 'important');
+    } else {
+      ['left','right','width','max-width','top','bottom','box-sizing','overflow-y','max-height']
+        .forEach(k => pn.style.removeProperty(k));
+    }
+  }
   const pal = document.getElementById('palette');
   if (!pal) return;
   const portrait = cw < 760 && ch > cw;
@@ -8204,6 +8287,60 @@ const btnSpeed = document.getElementById('btnSpeed');
 const btnPause = document.getElementById('btnPause');
 const panel = document.getElementById('panel');
 
+// ── 面板外独立悬浮关闭按钮（不受面板容器定位影响）──
+const floatClose = document.createElement('button');
+floatClose.id = 'floatClose';
+floatClose.textContent = '×';
+floatClose.style.cssText = 'position:fixed;z-index:9999;width:28px;height:28px;padding:0;' +
+  'border-radius:50%;border:1px solid rgba(255,110,110,.85);background:rgba(230,50,50,.9);' +
+  'color:#fff;font-size:18px;line-height:1;font-weight:700;font-family:inherit;' +
+  'display:none;align-items:center;justify-content:center;cursor:pointer;' +
+  'box-shadow:0 2px 10px rgba(0,0,0,.55)';
+document.body.appendChild(floatClose);
+
+function activePanel() {
+  const bp = document.getElementById('basePanel');
+  if (bp && bp.classList.contains('on')) return bp;
+  if (panel && panel.classList.contains('on')) return panel;
+  return null;
+}
+
+function positionFloatClose() {
+  const el = activePanel();
+  if (!el) { floatClose.style.display = 'none'; return; }
+  const r = el.getBoundingClientRect();
+  const vw = window.innerWidth || 390;
+  floatClose.style.display = 'flex';
+  floatClose.style.left = Math.max(4, Math.min(vw - 32, r.right - 34)) + 'px';
+  floatClose.style.top = Math.max(4, r.top + 6) + 'px';
+}
+
+floatClose.onclick = (ev) => {
+  ev.stopPropagation();
+  const bp = document.getElementById('basePanel');
+  if (bp && bp.classList.contains('on')) {
+    if (typeof closeBasePanel === 'function') closeBasePanel();
+    else bp.classList.remove('on');
+  }
+  if (panel && panel.classList.contains('on')) {
+    panel.classList.remove('on');
+    if (typeof deselect === 'function') deselect();
+  }
+  positionFloatClose();
+  sfx('sell');
+};
+
+setInterval(positionFloatClose, 300);
+window.addEventListener('resize', positionFloatClose);
+
+const pCloseBtn = document.getElementById('pClose');
+if (pCloseBtn) pCloseBtn.onclick = (e) => {
+  e.stopPropagation();
+  panel.classList.remove('on');
+  if (typeof deselect === 'function') deselect();
+  sfx('sell');
+};
+
 let hudCache = { gold: -1, lives: -1, wave: -1, enemy: -1, active: null, next: -99 };
 
 let _hudLastT = 0;
@@ -8260,6 +8397,7 @@ function selectTower(t) {
   S.build = null;
   document.querySelectorAll('.tw').forEach(el => el.classList.remove('sel'));
   panel.classList.add('on');
+  if (typeof applyMobileLayout === 'function') applyMobileLayout();
   renderPanel();
 }
 
@@ -8422,7 +8560,11 @@ function openBasePanel() {
     document.body.appendChild(el);
   }
   const next = S.baseTier + 1;
-  let html = '<h3>基地防御 Lv.' + S.baseTier + '</h3>';
+  let html = '<button id="bpClose" aria-label="关闭" style="position:absolute;top:7px;right:7px;' +
+    'width:24px;height:24px;padding:0;border-radius:50%;border:1px solid rgba(255,90,90,.75);' +
+    'background:rgba(255,60,60,.28);color:#ff9090;font-size:16px;line-height:1;font-weight:700;' +
+    'font-family:inherit;display:flex;align-items:center;justify-content:center;cursor:pointer">×</button>' +
+    '<h3>基地防御 Lv.' + S.baseTier + '</h3>';
   if (S.baseTier > 0) {
     html += '<p style="color:#7ce8b0">全局炮塔：伤害 +' +
       Math.round(BASE_GD[S.baseTier] * 100) + '%　射速 +' +
@@ -8444,6 +8586,8 @@ function openBasePanel() {
   }
   html += '<button class="btn" data-close="1">关闭</button>';
   el.innerHTML = html;
+  const bpX = el.querySelector('#bpClose');
+  if (bpX) bpX.onclick = (ev) => { ev.stopPropagation(); closeBasePanel(); };
   el.classList.add('on');
   el.querySelectorAll('button').forEach(btn => {
     btn.onclick = () => {
