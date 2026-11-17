@@ -5188,6 +5188,9 @@ function render() {
   const top = cam.y - ch / 2 / z, bot = cam.y + ch / 2 / z;
   const x0 = clamp(Math.floor(left) - 1, 0, N - 1), x1 = clamp(Math.ceil(right) + 1, 0, N - 1);
   const y0 = clamp(Math.floor(top) - 1, 0, N - 1), y1 = clamp(Math.ceil(bot) + 1, 0, N - 1);
+  // 视口范围（带 2 格余量），用于剔除屏幕外单位
+  const _vx0 = cam.x - cw / 2 / cam.z - 2, _vx1 = cam.x + cw / 2 / cam.z + 2;
+  const _vy0 = cam.y - ch / 2 / cam.z - 2, _vy1 = cam.y + ch / 2 / cam.z + 2;
 
   // 格子
   if (S.mode !== 'hex') {
@@ -5433,6 +5436,7 @@ function render() {
 
   // 塔
   for (const t of S.towers) {
+    if (t.x < _vx0 || t.x > _vx1 || t.y < _vy0 || t.y > _vy1) continue;   // 视口剔除
     const [sx, sy] = w2s(t.x + 0.5, t.y + 0.5);
     if (t.sealed) ctx.globalAlpha = 0.35;
     drawTower(sx, sy - z * 0.15, z, t, false);
@@ -5597,9 +5601,6 @@ function render() {
   drawBase();
 
   // 敌人：按高度分层绘制，飞行单位在最上层
-  // 视口范围（带 2 格余量），用于剔除屏幕外单位
-  const _vx0 = cam.x - cw / 2 / cam.z - 2, _vx1 = cam.x + cw / 2 / cam.z + 2;
-  const _vy0 = cam.y - ch / 2 / cam.z - 2, _vy1 = cam.y + ch / 2 / cam.z + 2;
   _drawBuf.length = 0;
   _bufGround.length = 0;
   _bufAir.length = 0;
@@ -5772,6 +5773,31 @@ function drawTower(sx, sy, z, t, iconMode) {
   const st = towerStats(t);
   const R = z * (iconMode ? 1 : 0.42);
   const cx = sx, cy = sy;
+
+  // 低画质：极简塔（1 次圆 + 1 次描边 + 炮口 + 等级点），保证后期帧率
+  if (!iconMode && S.q === 0) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(12,17,24,.86)';
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = Math.max(1.5, z * 0.055);
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = Math.max(2, z * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(t.angle) * R * 0.2, cy + Math.sin(t.angle) * R * 0.2);
+    ctx.lineTo(cx + Math.cos(t.angle) * R * 1.5, cy + Math.sin(t.angle) * R * 1.5);
+    ctx.stroke();
+    if (t.level > 1) {
+      ctx.fillStyle = '#ffd76a';
+      for (let i = 0; i < t.level; i++) {
+        ctx.beginPath();
+        ctx.arc(cx + (i - (t.level - 1) / 2) * z * 0.13, cy + R * 1.25, Math.max(1, z * 0.045), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+    return;
+  }
 
   // 狂怒药水：红色脉冲光环
   if (!iconMode && S.rageT > 0) {
