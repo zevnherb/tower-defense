@@ -846,7 +846,7 @@ const TOWER_AIR = {
 const TOWER_ACTIVE = {
   gun:    { name: '弹幕时刻', cd: 26, dur: 8, desc: '8 秒内射速 ×3' },
   cannon: { name: '地毯轰炸', cd: 30, desc: '射程内所有敌人受 3 倍伤害' },
-  frost:  { name: '冰封全场', cd: 36, desc: '全场敌人减速 75%，持续 4 秒' },
+  frost:  { name: '冰封领域', cd: 34, dur: 4, desc: '范围内敌人减速 75%，持续 4 秒' },
   sniper: { name: '死亡标记', cd: 28, desc: '射程内最强敌人受伤 +80%，持续 6 秒' },
   flame:  { name: '烈焰风暴', cd: 30, dur: 6, desc: '射程内持续燃烧，每秒 70 伤害' },
   tesla:  { name: '雷暴', cd: 34, desc: '对全场每个敌人放电 90 伤害' },
@@ -2065,7 +2065,7 @@ function towerStatsRaw(t) {
     if (s0.dmg) s0.dmg *= lp0;
     if (s0.burn) s0.burn *= lp0;
     if (s0.dps) s0.dps *= lp0;
-    if (s0.range) s0.range *= (1 + (lp0 - 1) * 0.25);
+    if (s0.range) s0.range *= (1 + (lp0 - 1) * 0.25) * 0.85;   // 含全局 -15%
     return s0;
   }
   const br = def.evolve[t.branch];
@@ -2125,8 +2125,8 @@ function towerStatsRaw(t) {
     if (s.dps) s.dps *= 1 + S.dmgBonus;
   }
 
-  // 终极狙击塔：全屏射程
-  if (t.type === 'sniper' && t.level >= 4) s.range = 80;
+  // 终极狙击塔：超远射程（不再是全屏）
+  if (t.type === 'sniper' && t.level >= 4) s.range = 14;
 
   // 高地加成
   if (t.high) {
@@ -2144,6 +2144,7 @@ function towerStatsRaw(t) {
 
   // 全场狂怒药水
   if (S && S.rageT > 0 && s.rate) s.rate *= 0.5;
+  if (s.range) s.range *= 0.85;   // 全局射程 -15%
   return s;
 }
 
@@ -2549,7 +2550,6 @@ function fireTower(t, dt) {
       const stz = towerStats(t);
       if (t.type === 'frost') { t.zoneCd = 9; spawnZoneOnPath('ice', t); sfx('frost'); }
       else if (t.type === 'magnet') { t.zoneCd = 9; spawnZoneOnPath('storm', t); }
-      else if (t.type === 'wind' && stz.tornado) { t.zoneCd = 13; spawnTornado(t); sfx('wind'); }
       else t.zoneCd = 1;
     }
   }
@@ -3105,14 +3105,38 @@ function useActive(t) {
       }
       addFx(cx, cy, 'boom', 0.6);
       break;
-    case 'frost':
+    case 'frost': {
+      const fr = Math.max(3.5, st.range * 1.6);
+      let hitF = 0;
       for (const e of S.enemies) {
         if (e.dead) continue;
+        if (dist(cx, cy, e.x, e.y) > fr) continue;   // 只在释放范围内生效
         e.slowF = Math.max(e.slowF, 0.75);
         e.slowT = Math.max(e.slowT, act.dur);
+        hitF++;
       }
-      addFx(cx, cy, 'boom', 0.7);
+      // 冰环视觉：标出作用范围
+      addFx(cx, cy, 'boom', 0.9);
+      for (let i = 0; i < 10; i++) {
+        const a = i / 10 * Math.PI * 2;
+        addFx(cx + Math.cos(a) * fr * 0.8, cy + Math.sin(a) * fr * 0.8, 'chip', 0.5);
+      }
+      toast('冰封领域：' + hitF + ' 只敌人减速');
       break;
+    }
+    case 'wind': {
+      spawnTornado(t);
+      let nW = 0;
+      for (const e of S.enemies) {
+        if (e.dead) continue;
+        if (!(e.flying || e.type === 'flock')) continue;
+        e.disT = Math.max(e.disT || 0, act.dur * 0.6);
+        nW++;
+      }
+      addFx(cx, cy, 'boom', 0.85);
+      toast('飓风：龙卷风登场，吹退 ' + nW + ' 个飞行单位');
+      break;
+    }
     case 'sniper': {
       let best = null, bv = -1;
       for (const e of S.enemies) {
@@ -7403,20 +7427,20 @@ function drawFx(f) {
 
   } else if (f.type === 'fog') {
     const grow = 1 - k;
-    const rad = cam.z * (0.55 + grow * 2.0);
+    const rad = cam.z * (0.45 + grow * 1.4);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, rad);
-    fg.addColorStop(0, 'rgba(170,235,95,' + (k * 0.42) + ')');
-    fg.addColorStop(0.55, 'rgba(120,195,60,' + (k * 0.26) + ')');
+    fg.addColorStop(0, 'rgba(170,235,95,' + (k * 0.22) + ')');
+    fg.addColorStop(0.55, 'rgba(120,195,60,' + (k * 0.13) + ')');
     fg.addColorStop(1, 'rgba(70,150,40,0)');
     ctx.fillStyle = fg;
     ctx.beginPath(); ctx.arc(sx, sy, rad, 0, Math.PI * 2); ctx.fill();
     // 翻滚的雾团
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       const a = i * 1.05 + S.time * 0.9;
       const rr = rad * (0.32 + Math.sin(S.time * 2.2 + i * 1.7) * 0.18);
-      ctx.globalAlpha = k * 0.34;
+      ctx.globalAlpha = k * 0.16;
       ctx.fillStyle = i % 2 ? '#a3e635' : '#6ee7a0';
       ctx.beginPath();
       ctx.arc(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr, rad * 0.30, 0, Math.PI * 2);
