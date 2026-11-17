@@ -2405,6 +2405,13 @@ function damageEnemy(e, dmg, src) {
   if (e.type === 'digger' && e.burrowT > 0) return 0;
   let real = dmg * (e.markT > 0 ? (1 + (e.markBoost || 0.35)) : 1)
     * (e.bossVuln > 0 ? 1.35 : 1);   // BOSS 被控时转为易伤 +35%
+  // ── 组合效果 ──
+  if (src && src.type === 'tesla' && (e.slowT || 0) > 0) {
+    real *= 1.5;                     // 超导：电击塔打被减速的目标
+  } else if (src && src.type === 'flame' && (e.poisoned || 0) > 0) {
+    real *= 1.4;                     // 燃毒：火焰塔打中毒目标
+    if (Math.random() < 0.35) addFx(e.x, e.y, 'boom', 0.3);
+  }
   if (e.type === 'armored') real = Math.max(1, real - 25);
   if (e.enraged) real *= 0.8;          // 狂暴减伤
 
@@ -5001,6 +5008,7 @@ function update(dt) {
     }
     if (e.markT > 0) e.markT -= dt;
     if (e.bossVuln > 0) e.bossVuln -= dt;
+    if (e.poisoned > 0) e.poisoned -= dt;
 
     // 浮空法师：飞抵基地附近或到达终点就投放
     if (e.type === 'levitator' && !e.dropped) {
@@ -5147,6 +5155,15 @@ function update(dt) {
     S.gold += bonus;
     S.nextT = 20;
     toast('第 ' + S.wave + ' 波结束  +' + bonus + ' 金币');
+    {
+      const bst = loadBest();
+      if (S.wave > bst.wave) {
+        saveBest(S.wave, Math.max(bst.kills, S.kills));
+        announce('新纪录！第 ' + S.wave + ' 波', '#ffd76a');
+      } else if (S.kills > bst.kills) {
+        saveBest(bst.wave, S.kills);
+      }
+    }
     updateHud();
     if (S.wave >= WAVE_MAX && !S.won && !S.awaitChoice && S.enemies.length === 0) {
       if (endlessMode) {
@@ -5170,6 +5187,10 @@ function impact(s) {
 
   // 毒气塔：命中位置留下一团持续扩散的毒雾
   if (s.type === 'poison') {
+    for (const pe of S.enemies) {
+      if (pe.dead) continue;
+      if (dist(s.x, s.y, pe.x, pe.y) <= 1.5) pe.poisoned = 3;
+    }
     S.fx.push({ type: 'fog', x: s.x, y: s.y, life: 1.6, max: 1.6 });
     S.fx.push({ type: 'fog', x: s.x + rnd(-0.3, 0.3), y: s.y + rnd(-0.3, 0.3), life: 1.9, max: 1.9 });
   }
@@ -5289,6 +5310,19 @@ function showEndChoice() {
   };
 }
 
+// ── 最佳纪录（本地存档）──
+const BEST_KEY = 'td-best-v1';
+function loadBest() {
+  try {
+    const b = JSON.parse(localStorage.getItem(BEST_KEY) || 'null');
+    if (b && typeof b.wave === 'number') return b;
+  } catch (e) {}
+  return { wave: 0, kills: 0 };
+}
+function saveBest(w, k) {
+  try { localStorage.setItem(BEST_KEY, JSON.stringify({ wave: w, kills: k })); } catch (e) {}
+}
+
 function gameOver(won) {
   S.over = true;
   S.paused = true;
@@ -5298,6 +5332,9 @@ function gameOver(won) {
   document.getElementById('ovText').innerHTML = won
     ? '你守下了全部 ' + WAVE_MAX + ' 波<br>剩余血量 ' + S.lives + ' · 击杀 ' + S.kills
     : '坚持到第 ' + S.wave + ' 波<br>击杀 ' + S.kills + ' 只怪物';
+  const best = loadBest();
+  document.getElementById('ovText').innerHTML +=
+    '<br><span style="color:#7f8da0;font-size:12px">最佳纪录：第 ' + best.wave + ' 波 · 击杀 ' + best.kills + '</span>';
   ov.classList.add('on');
   sfx(won ? 'win' : 'lose');
 }
@@ -6078,6 +6115,8 @@ function render() {
   // 特效
   for (const f of S.fx) {
     if (f.x < _vx0 || f.x > _vx1 || f.y < _vy0 || f.y > _vy1) continue;
+    // 超低画质：跳过装饰性粒子，只保留关键特效
+    if (S.q < 0 && (f.type === 'chip' || f.type === 'fog' || f.type === 'spark')) continue;
     drawFx(f);
   }
 
@@ -6117,7 +6156,7 @@ function drawTower(sx, sy, z, t, iconMode) {
   const cx = sx, cy = sy;
 
   // 低画质：极简塔（1 次圆 + 1 次描边 + 炮口 + 等级点），保证后期帧率
-  if (!iconMode && S.q === 0) {
+  if (!iconMode && S.q <= 0) {
     ctx.save();
     ctx.fillStyle = 'rgba(12,17,24,.86)';
     ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
@@ -8490,7 +8529,13 @@ function renderPanel() {
     def.evolve.forEach((ev, i) => {
       const eb = document.createElement('button');
       eb.className = 'btn gold';
+      const evS = ev.stats || {};
+      const cmp = [];
+      if (evS.dmg) cmp.push('伤害 ' + Math.round(evS.dmg));
+      if (evS.rate) cmp.push('间隔 ' + evS.rate.toFixed(2) + 's');
+      if (evS.range) cmp.push('射程 ' + (evS.range * 0.85).toFixed(1));
       eb.innerHTML = '进化：' + ev.name + ' — ' + costOf(ev.cost) + ' 金<br>' +
+        '<span style="color:#9fe8ff;font-size:11px">' + cmp.join(' · ') + '</span><br>' +
         '<span style="color:#7f8da0;font-size:11px">' + ev.desc + '</span>';
       eb.onclick = () => {
         const c = costOf(ev.cost);
@@ -8605,22 +8650,24 @@ if (btnAutoBuild) btnAutoBuild.onclick = () => {
   toast(autoBuild ? '自动建造：开启' : '自动建造：关闭');
 };
 const btnAutoSkill = document.getElementById('btnAutoSkill');
-const QUALITY_NAME = ['低', '中', '高'];
+const QUALITY_NAME = { '-1': '超低', '0': '低', '1': '中', '2': '高' };
 const btnQuality = document.getElementById('btnQuality');
 function applyQuality(q) {
   if (!S) return;
   const v = Number.isFinite(q) ? q : 2;
-  S.q = clamp(v, 0, 2);
+  S.q = clamp(v, -1, 2);
   if (btnQuality) {
-    btnQuality.textContent = '画质 ' + QUALITY_NAME[S.q];
+    btnQuality.textContent = '画质 ' + (QUALITY_NAME[String(S.q)] || '高');
     btnQuality.classList.toggle('on', S.q !== 2);
   }
 }
 if (btnQuality) btnQuality.onclick = () => {
   const cur = Number.isFinite(S.q) ? S.q : 2;
-  const next = (cur + 2) % 3;   // 高 → 中 → 低 → 高
+  const order = [2, 1, 0, -1];
+  const next = order[(order.indexOf(cur) + 1) % order.length];
   applyQuality(next);
-  toast('画质：' + QUALITY_NAME[next] + (next === 2 ? '（完整细节）' : (next === 0 ? '（极简，最流畅）' : '（省略杂物）')));
+  const tips = { '2': '（完整细节）', '1': '（省略杂物）', '0': '（极简塔身）', '-1': '（超低：关粒子/暗角）' };
+  toast('画质：' + (QUALITY_NAME[String(next)] || '高') + (tips[String(next)] || ''));
   sfx('upgrade');
 };
 
